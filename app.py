@@ -34,7 +34,7 @@ st.sidebar.title(f"欢迎您，管理员")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("请选择功能模块", [
     "📊 教务数据看板", 
-    "📁 批量数据导入预测", # <--- 新增功能
+    "📁 批量数据导入预测",
     "🧑‍🎓 单学生风险预测", 
     "📝 教师干预记录",
     "📈 算法实验评估报告"
@@ -50,10 +50,19 @@ st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解�
 def load_data():
     file_path = "data/students.csv"
     try:
-        if not os.path.exists(file_path): raise FileNotFoundError
+        if not os.path.exists(file_path): 
+            raise FileNotFoundError("文件不存在")
         df = pd.read_csv(file_path, encoding="utf-8-sig")
         df.columns = df.columns.str.strip()
+        
+        # 【关键修复】强制检查列名，如果不对就抛出异常触发自动生成
+        required = ["attendance", "homework_rate", "study_hours", "past_fail", "online_hours", "family_support", "at_risk"]
+        for col in required:
+            if col not in df.columns:
+                raise ValueError("列名缺失，文件已损坏")
+                
     except Exception:
+        # 自动生成数据的逻辑
         np.random.seed(42)
         N = 1000
         attendance = np.clip(np.random.normal(0.85, 0.12, N), 0.3, 1.0)
@@ -128,45 +137,36 @@ if page == "📊 教务数据看板":
     csv = show_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 导出当前名单数据 (CSV)", csv, file_name="students_data.csv", mime="text/csv")
 
-# ================= 页面 2：批量导入预测（新增核心功能） =================
+# ================= 页面 2：批量导入预测 =================
 elif page == "📁 批量数据导入预测":
     st.title("📁 批量学生数据导入与预测")
     st.caption("支持上传包含学生特征的 CSV 文件，系统将实时调用机器学习模型进行批量预测。")
     
-    # 提供一个模板下载，方便老师测试
     template_df = pd.DataFrame(columns=features)
-    template_df.loc[0] = [0.5, 0.5, 4.0, 2, 3.0, 0] # 放一条假数据作为示例
+    template_df.loc[0] = [0.5, 0.5, 4.0, 2, 3.0, 0]
     template_csv = template_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 下载预测模板 (CSV格式)", template_csv, file_name="template.csv", mime="text/csv")
     
     st.divider()
-    
-    # 文件上传控件
     uploaded_file = st.file_uploader("请上传 CSV 文件", type=["csv"])
     
     if uploaded_file is not None:
         try:
-            # 读取上传的文件
             batch_df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
             batch_df.columns = batch_df.columns.str.strip()
             
-            # 检查是否包含所有必需的特征列
             missing_cols = [col for col in features if col not in batch_df.columns]
             if missing_cols:
                 st.error(f"导入失败！文件缺少以下必需的特征列：{missing_cols}")
             else:
                 st.success("文件解析成功！开始进行批量预测...")
-                
-                # 进行预测
                 probs = model.predict_proba(batch_df[features])[:, 1]
                 batch_df["预测风险概率"] = probs.round(3)
                 batch_df["预测风险等级"] = batch_df["预测风险概率"].apply(get_risk_level)
                 
-                # 显示结果表格
                 st.subheader("📊 批量预测结果")
                 st.dataframe(batch_df, use_container_width=True)
                 
-                # 导出结果
                 result_csv = batch_df.to_csv(index=False, encoding="utf-8-sig")
                 st.download_button("📥 导出带预测结果的数据 (CSV)", result_csv, file_name="prediction_results.csv", mime="text/csv")
                 
