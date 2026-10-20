@@ -23,7 +23,7 @@ page = st.sidebar.radio("请选择功能模块", [
 st.sidebar.markdown("---")
 st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解释性构建。")
 
-# ================= 数据加载（终极防报错版） =================
+# ================= 数据加载（防报错版） =================
 @st.cache_data
 def load_data():
     file_path = "data/students.csv"
@@ -109,8 +109,12 @@ if page == "📊 教务数据看板":
         st.subheader("风险等级分布")
         counts = df_result["风险等级"].value_counts()
         fig, ax = plt.subplots()
-        # 【修复云端方块】使用英文标签，彻底告别乱码
-        labels_en = [c.replace("🔴 ", "High").replace("🟡 ", "Medium").replace("🟢 ", "Low") for c in counts.index]
+        # 终极修复：饼图标签用纯英文，彻底告别云端方块
+        labels_en = []
+        for c in counts.index:
+            if "高" in c: labels_en.append("High Risk")
+            elif "中" in c: labels_en.append("Medium Risk")
+            else: labels_en.append("Low Risk")
         ax.pie(counts.values, labels=labels_en, autopct="%1.1f%%", colors=["#2ecc71", "#e74c3c", "#f39c12"])
         ax.axis("equal")
         st.pyplot(fig)
@@ -123,7 +127,7 @@ if page == "📊 教务数据看板":
 
     st.divider()
     
-    # 【新增功能】名单总览切换
+    # 名单总览切换
     st.subheader("📋 学生名单总览")
     view_option = st.radio("请选择要查看的数据范围：", ["🔴 仅看高风险预警名单", "👥 查看全部 1000 名学生"], horizontal=True)
     
@@ -195,7 +199,6 @@ elif page == "📝 教师干预记录":
                 record = pd.DataFrame([[selected_sid, action, note, pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")]],
                                       columns=["学号", "干预措施", "备注", "记录时间"])
                 file_path = "data/intervention_records.csv"
-                # 云端环境如果没有 data 文件夹，先建一个
                 if not os.path.exists("data"):
                     os.makedirs("data")
                 
