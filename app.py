@@ -6,6 +6,7 @@ import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
+# 设置中文字体（本地运行有效，云端依靠英文标签兜底）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 st.set_page_config(page_title="学业预警系统", layout="wide", page_icon="🎓")
@@ -26,19 +27,17 @@ st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解�
 @st.cache_data
 def load_data():
     file_path = "data/students.csv"
-    # 如果文件不存在，或者云端读取报错，就直接在内存里生成数据
     try:
         if not os.path.exists(file_path):
             raise FileNotFoundError
         df = pd.read_csv(file_path, encoding="utf-8-sig")
         df.columns = df.columns.str.strip()
-        # 检查列名是否全，不全也重新生成
         required = ["attendance", "homework_rate", "study_hours", "past_fail", "online_hours", "family_support", "at_risk"]
         for col in required:
             if col not in df.columns:
                 raise ValueError("列名缺失")
     except Exception:
-        # 自动生成 1000 条模拟数据
+        # 如果文件不存在或损坏，直接在云端内存生成 1000 条数据
         np.random.seed(42)
         N = 1000
         attendance = np.clip(np.random.normal(0.85, 0.12, N), 0.3, 1.0)
@@ -110,8 +109,9 @@ if page == "📊 教务数据看板":
         st.subheader("风险等级分布")
         counts = df_result["风险等级"].value_counts()
         fig, ax = plt.subplots()
-        labels = [c.replace("🔴", "").replace("🟡", "").replace("🟢", "").strip() for c in counts.index]
-        ax.pie(counts.values, labels=labels, autopct="%1.1f%%", colors=["#2ecc71", "#e74c3c", "#f39c12"])
+        # 【修复云端方块】使用英文标签，彻底告别乱码
+        labels_en = [c.replace("🔴 ", "High").replace("🟡 ", "Medium").replace("🟢 ", "Low") for c in counts.index]
+        ax.pie(counts.values, labels=labels_en, autopct="%1.1f%%", colors=["#2ecc71", "#e74c3c", "#f39c12"])
         ax.axis("equal")
         st.pyplot(fig)
     with right:
@@ -122,11 +122,20 @@ if page == "📊 教务数据看板":
         st.pyplot(fig2)
 
     st.divider()
-    st.subheader("📋 待处理高风险名单")
-    show_df = df_result[df_result["风险等级"] == "🔴 高风险"].sort_values("风险概率", ascending=False)
+    
+    # 【新增功能】名单总览切换
+    st.subheader("📋 学生名单总览")
+    view_option = st.radio("请选择要查看的数据范围：", ["🔴 仅看高风险预警名单", "👥 查看全部 1000 名学生"], horizontal=True)
+    
+    if view_option == "🔴 仅看高风险预警名单":
+        show_df = df_result[df_result["风险等级"] == "🔴 高风险"].sort_values("风险概率", ascending=False)
+    else:
+        show_df = df_result.sort_values("风险概率", ascending=False)
+        
     st.dataframe(show_df[["student_id", "attendance", "homework_rate", "past_fail", "风险概率", "风险等级"]], use_container_width=True)
+    
     csv = show_df.to_csv(index=False, encoding="utf-8-sig")
-    st.download_button("📥 导出高风险名单 (CSV)", csv, file_name="high_risk_students.csv", mime="text/csv")
+    st.download_button("📥 导出当前名单数据 (CSV)", csv, file_name="students_data.csv", mime="text/csv")
 
 # ================= 页面 2：单学生预测 =================
 elif page == "🧑‍🎓 单学生风险预测":
@@ -186,6 +195,10 @@ elif page == "📝 教师干预记录":
                 record = pd.DataFrame([[selected_sid, action, note, pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")]],
                                       columns=["学号", "干预措施", "备注", "记录时间"])
                 file_path = "data/intervention_records.csv"
+                # 云端环境如果没有 data 文件夹，先建一个
+                if not os.path.exists("data"):
+                    os.makedirs("data")
+                
                 if os.path.exists(file_path):
                     record.to_csv(file_path, mode='a', header=False, index=False, encoding="utf-8-sig")
                 else:
