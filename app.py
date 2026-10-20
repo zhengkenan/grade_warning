@@ -14,31 +14,31 @@ st.set_page_config(page_title="学业预警系统", layout="wide", page_icon="�
 st.sidebar.title("🎓 智能教务管理平台")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("请选择功能模块", [
-    "📊 教务数据看板",
-    "🧑‍🎓 单学生风险预测",
+    "📊 教务数据看板", 
+    "🧑‍🎓 单学生风险预测", 
     "📝 教师干预记录",
     "📈 算法实验评估报告"
 ])
 st.sidebar.markdown("---")
 st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解释性构建。")
 
-
+# ================= 数据加载（已修复云端 KeyError） =================
 @st.cache_data
 def load_data():
-    return pd.read_csv("data/students.csv").fillna(pd.read_csv("data/students.csv").mean(numeric_only=True))
-
+    # 加上 encoding 和 strip 处理，防止云端列名不匹配
+    df = pd.read_csv("data/students.csv", encoding="utf-8-sig")
+    df.columns = df.columns.str.strip()
+    return df.fillna(df.mean(numeric_only=True))
 
 df = load_data()
 features = ["attendance", "homework_rate", "study_hours", "past_fail", "online_hours", "family_support"]
 
-
+# ================= 模型训练 =================
 @st.cache_resource
 def train_model(data):
-    X_train, _, y_train, _ = train_test_split(data[features], data["at_risk"], test_size=0.2, random_state=42,
-                                              stratify=data["at_risk"])
+    X_train, _, y_train, _ = train_test_split(data[features], data["at_risk"], test_size=0.2, random_state=42, stratify=data["at_risk"])
     model = RandomForestClassifier(n_estimators=150, max_depth=5, random_state=42).fit(X_train, y_train)
     return model
-
 
 model = train_model(df)
 
@@ -46,17 +46,12 @@ model = train_model(df)
 if page == "📊 教务数据看板":
     st.title("📊 学生学业预警整体看板")
     proba = model.predict_proba(df[features])[:, 1]
-
-
+    
     def risk_level(p):
-        if p >= 0.7:
-            return "🔴 高风险"
-        elif p >= 0.4:
-            return "🟡 中风险"
-        else:
-            return "🟢 低风险"
-
-
+        if p >= 0.7: return "🔴 高风险"
+        elif p >= 0.4: return "🟡 中风险"
+        else: return "🟢 低风险"
+    
     df_result = df.copy()
     df_result["风险概率"] = proba.round(3)
     df_result["风险等级"] = df_result["风险概率"].apply(risk_level)
@@ -73,7 +68,9 @@ if page == "📊 教务数据看板":
         st.subheader("风险等级分布")
         counts = df_result["风险等级"].value_counts()
         fig, ax = plt.subplots()
-        ax.pie(counts.values, labels=counts.index, autopct="%1.1f%%", colors=["#2ecc71", "#e74c3c", "#f39c12"])
+        # 这里把 labels 改成纯文字，防止云端 emoji 显示方块
+        labels = [c.replace("🔴", "").replace("🟡", "").replace("🟢", "").strip() for c in counts.index]
+        ax.pie(counts.values, labels=labels, autopct="%1.1f%%", colors=["#2ecc71", "#e74c3c", "#f39c12"])
         ax.axis("equal")
         st.pyplot(fig)
     with right:
@@ -86,8 +83,7 @@ if page == "📊 教务数据看板":
     st.divider()
     st.subheader("📋 待处理高风险名单")
     show_df = df_result[df_result["风险等级"] == "🔴 高风险"].sort_values("风险概率", ascending=False)
-    st.dataframe(show_df[["student_id", "attendance", "homework_rate", "past_fail", "风险概率", "风险等级"]],
-                 use_container_width=True)
+    st.dataframe(show_df[["student_id", "attendance", "homework_rate", "past_fail", "风险概率", "风险等级"]], use_container_width=True)
     csv = show_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 导出高风险名单 (CSV)", csv, file_name="high_risk_students.csv", mime="text/csv")
 
@@ -104,14 +100,14 @@ elif page == "🧑‍🎓 单学生风险预测":
             pf = st.number_input("过往挂科数", 0, 20, 0, 1)
         with col3:
             oh = st.number_input("在线学习时长", 0.0, 50.0, 5.0, 0.5)
-            fam = st.selectbox("家庭支持", [1, 0], format_func=lambda x: "良好" if x == 1 else "较弱")
+            fam = st.selectbox("家庭支持", [1, 0], format_func=lambda x: "良好" if x==1 else "较弱")
         submit = st.form_submit_button("🔍 一键评估风险")
 
     if submit:
         input_data = pd.DataFrame([[att, hw, sh, pf, oh, fam]], columns=features)
         prob = model.predict_proba(input_data)[0, 1]
         level = "🔴 高风险" if prob >= 0.7 else ("🟡 中风险" if prob >= 0.4 else "🟢 低风险")
-
+        
         st.divider()
         col_res1, col_res2 = st.columns(2)
         col_res1.metric("AI 预测风险概率", f"{prob:.1%}")
@@ -124,7 +120,7 @@ elif page == "🧑‍🎓 单学生风险预测":
         if pf >= 1: suggestions.append(f"⚠️ 已有 {pf} 门挂科记录，建议制定复习计划。")
         if sh < 6: suggestions.append(f"⚠️ 每周学习仅 {sh:.1f} 小时，建议参加晚自习。")
         if fam == 0: suggestions.append("⚠️ 家庭支持较弱，建议加强心理关怀。")
-
+        
         if not suggestions:
             st.success("✅ 该生各项指标良好，暂无预警风险！")
         else:
@@ -135,7 +131,7 @@ elif page == "📝 教师干预记录":
     st.title("📝 教师干预记录管理")
     proba = model.predict_proba(df[features])[:, 1]
     high_risk_ids = df[proba >= 0.7]["student_id"].tolist()
-
+    
     if not high_risk_ids:
         st.info("当前没有高风险学生，无需干预。")
     else:
@@ -144,7 +140,7 @@ elif page == "📝 教师干预记录":
             action = st.selectbox("干预措施", ["辅导员约谈", "联系家长", "安排学业帮扶", "心理辅导"])
             note = st.text_area("备注详情（如约谈结果）", "已约定每周五下午辅导。")
             submitted = st.form_submit_button("✅ 提交干预记录")
-
+            
             if submitted:
                 record = pd.DataFrame([[selected_sid, action, note, pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")]],
                                       columns=["学号", "干预措施", "备注", "记录时间"])
@@ -154,7 +150,7 @@ elif page == "📝 教师干预记录":
                 else:
                     record.to_csv(file_path, mode='w', header=True, index=False, encoding="utf-8-sig")
                 st.success(f"已成功记录对 {selected_sid} 的干预措施！")
-
+        
         st.divider()
         st.subheader("📜 历史干预记录")
         if os.path.exists("data/intervention_records.csv"):
@@ -167,31 +163,16 @@ elif page == "📝 教师干预记录":
 elif page == "📈 算法实验评估报告":
     st.title("📈 模型算法对比与可解释性评估")
     st.caption("本页面展示离线实验的核心图表，证明模型选择的科学性与合理性。")
-
-    # 新增：一键生成图表按钮（防止文件丢失或报错）
-    if st.button("🔄 重新生成所有实验图表"):
-        with st.spinner("正在后台运行模型并生成图表，请稍候（约需 20 秒）..."):
-            import subprocess
-            import sys
-
-            try:
-                # 强制依次运行脚本
-                subprocess.run([sys.executable, "experiment.py"], check=True)
-                subprocess.run([sys.executable, "smote_experiment.py"], check=True)
-                st.success("图表生成完毕！请刷新页面。")
-            except Exception as e:
-                st.error(f"生成失败，请检查控制台报错。错误信息：{e}")
-
-    st.divider()
+    
     tab1, tab2, tab3 = st.tabs(["模型对比与调参", "SMOTE 不平衡处理", "SHAP 可解释性分析"])
-
+    
     with tab1:
         st.subheader("1. 基础模型 ROC 对比")
         if os.path.exists("output/roc_curve.png"):
             st.image("output/roc_curve.png", caption="逻辑回归、决策树、随机森林对比")
         else:
-            st.warning("⚠️ 未找到图片，请点击上方的【重新生成所有实验图表】按钮。")
-
+            st.info("云端暂未挂载离线图表，请在本地查看。")
+            
         st.subheader("2. 超参数调优过程")
         col1, col2 = st.columns(2)
         with col1:
@@ -200,15 +181,13 @@ elif page == "📈 算法实验评估报告":
         with col2:
             if os.path.exists("output/exp2_rf_estimators.png"):
                 st.image("output/exp2_rf_estimators.png", caption="随机森林树数量对 AUC 的影响")
-
+                
     with tab2:
         st.subheader("SMOTE 处理前后效果对比")
         if os.path.exists("output/smote_roc.png"):
             st.image("output/smote_roc.png", caption="SMOTE 过采样前后的 ROC 曲线对比")
             st.info("说明：SMOTE 牺牲了少许整体准确率，但极大提升了少数类（预警学生）的召回率。")
-        else:
-            st.warning("⚠️ 未找到图片，请点击上方的【重新生成所有实验图表】按钮。")
-
+            
     with tab3:
         st.subheader("SHAP 模型黑盒破解")
         if os.path.exists("output/shap_summary.png"):
@@ -216,5 +195,3 @@ elif page == "📈 算法实验评估报告":
         if os.path.exists("output/shap_waterfall.png"):
             st.image("output/shap_waterfall.png", caption="单学生风险归因瀑布图")
             st.info("说明：系统不仅能预测风险，还能清晰解释是哪个指标导致了该学生的风险。")
-        else:
-            st.warning("⚠️ 未找到图片，请点击上方的【重新生成所有实验图表】按钮。")
