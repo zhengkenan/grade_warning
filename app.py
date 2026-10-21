@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import plotly.graph_objects as go  # 新增：用于画雷达图
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-# 设置中文字体（本地生效）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 st.set_page_config(page_title="智能教务管理系统", layout="wide", page_icon="🎓")
@@ -51,22 +51,14 @@ st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解�
 def load_data():
     file_path = "data/students.csv"
     try:
-        if not os.path.exists(file_path): 
-            raise FileNotFoundError("文件不存在")
+        if not os.path.exists(file_path): raise FileNotFoundError("文件不存在")
         df = pd.read_csv(file_path, encoding="utf-8-sig")
         df.columns = df.columns.str.strip()
-        
-        # 【修复检索报错】强制将学号转为字符串
         df["student_id"] = df["student_id"].astype(str)
-        
-        # 强制检查列名，如果不对就抛出异常触发自动生成
         required = ["attendance", "homework_rate", "study_hours", "past_fail", "online_hours", "family_support", "at_risk"]
         for col in required:
-            if col not in df.columns:
-                raise ValueError("列名缺失，文件已损坏")
-                
+            if col not in df.columns: raise ValueError("列名缺失")
     except Exception:
-        # 如果文件缺失或损坏，自动生成 1000 条模拟数据
         np.random.seed(42)
         N = 1000
         attendance = np.clip(np.random.normal(0.85, 0.12, N), 0.3, 1.0)
@@ -75,21 +67,10 @@ def load_data():
         past_fail = np.random.poisson(0.8, N)
         online_hours = np.clip(np.random.normal(5, 2, N), 0, 15)
         family_support = np.random.choice([0, 1], N, p=[0.35, 0.65])
-        
         risk_score = ((attendance < 0.8).astype(int) * 2 + (homework_rate < 0.7).astype(int) * 2 + (study_hours < 6).astype(int) * 1 + (past_fail >= 1).astype(int) * 2 + (online_hours < 4).astype(int) * 1 + (family_support == 0).astype(int) * 1)
         noise = np.random.choice([0, 1], N, p=[0.9, 0.1])
         label = ((risk_score + noise) >= 3).astype(int)
-        
-        df = pd.DataFrame({
-            "student_id": [f"S{i:04d}" for i in range(1, N+1)], 
-            "attendance": attendance.round(3), 
-            "homework_rate": homework_rate.round(3), 
-            "study_hours": study_hours.round(1), 
-            "past_fail": past_fail, 
-            "online_hours": online_hours.round(1), 
-            "family_support": family_support, 
-            "at_risk": label
-        })
+        df = pd.DataFrame({"student_id": [f"S{i:04d}" for i in range(1, N+1)], "attendance": attendance.round(3), "homework_rate": homework_rate.round(3), "study_hours": study_hours.round(1), "past_fail": past_fail, "online_hours": online_hours.round(1), "family_support": family_support, "at_risk": label})
     return df.fillna(df.mean(numeric_only=True))
 
 df = load_data()
@@ -141,23 +122,14 @@ if page == "📊 教务数据看板":
 
     st.divider()
     st.subheader("📋 学生名单查询与导出")
-    
-    # 实时搜索框
     search_id = st.text_input("🔍 输入学号进行实时检索（如 S0001）", "")
     view_option = st.radio("数据范围：", ["🔴 仅看高风险", "👥 查看全部"], horizontal=True)
-    
     if view_option == "🔴 仅看高风险":
         show_df = df_result[df_result["风险等级"] == "🔴 高风险"].sort_values("风险概率", ascending=False)
     else:
         show_df = df_result.sort_values("风险概率", ascending=False)
-        
     if search_id:
-        # 确保搜索词也是字符串格式，避免报错
-        search_id_str = str(search_id).strip()
-        show_df = show_df[show_df["student_id"].str.contains(search_id_str, case=False)]
-        if show_df.empty:
-            st.warning("未查询到相关学号的学生数据。")
-            
+        show_df = show_df[show_df["student_id"].str.contains(str(search_id).strip(), case=False)]
     st.dataframe(show_df[["student_id", "attendance", "homework_rate", "past_fail", "风险概率", "风险等级"]], use_container_width=True)
     csv = show_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 导出当前名单数据 (CSV)", csv, file_name="students_data.csv", mime="text/csv")
@@ -166,21 +138,16 @@ if page == "📊 教务数据看板":
 elif page == "📁 批量数据导入预测":
     st.title("📁 批量学生数据导入与预测")
     st.caption("支持上传包含学生特征的 CSV 文件，系统将实时调用机器学习模型进行批量预测。")
-    
-    # 提供模板下载
     template_df = pd.DataFrame(columns=features)
     template_df.loc[0] = [0.5, 0.5, 4.0, 2, 3.0, 0]
-    template_csv = template_df.to_csv(index=False, encoding="utf-8-sig")
-    st.download_button("📥 下载预测模板 (CSV格式)", template_csv, file_name="template.csv", mime="text/csv")
+    st.download_button("📥 下载预测模板 (CSV格式)", template_df.to_csv(index=False, encoding="utf-8-sig"), file_name="template.csv", mime="text/csv")
     
     st.divider()
     uploaded_file = st.file_uploader("请上传 CSV 文件", type=["csv"])
-    
     if uploaded_file is not None:
         try:
             batch_df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
             batch_df.columns = batch_df.columns.str.strip()
-            
             missing_cols = [col for col in features if col not in batch_df.columns]
             if missing_cols:
                 st.error(f"导入失败！文件缺少以下必需的特征列：{missing_cols}")
@@ -189,19 +156,14 @@ elif page == "📁 批量数据导入预测":
                 probs = model.predict_proba(batch_df[features])[:, 1]
                 batch_df["预测风险概率"] = probs.round(3)
                 batch_df["预测风险等级"] = batch_df["预测风险概率"].apply(get_risk_level)
-                
-                st.subheader("📊 批量预测结果")
                 st.dataframe(batch_df, use_container_width=True)
-                
-                result_csv = batch_df.to_csv(index=False, encoding="utf-8-sig")
-                st.download_button("📥 导出带预测结果的数据 (CSV)", result_csv, file_name="prediction_results.csv", mime="text/csv")
-                
+                st.download_button("📥 导出带预测结果的数据 (CSV)", batch_df.to_csv(index=False, encoding="utf-8-sig"), file_name="prediction_results.csv", mime="text/csv")
         except Exception as e:
             st.error(f"文件读取失败，请检查文件格式是否正确。错误信息：{e}")
 
 # ================= 页面 3：单学生预测 =================
 elif page == "🧑‍🎓 单学生风险预测":
-    st.title("🧑‍🎓 单学生风险实时预测")
+    st.title("🧑‍🎓 单学生风险实时预测与特征画像")
     with st.form("student_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -213,7 +175,7 @@ elif page == "🧑‍🎓 单学生风险预测":
         with col3:
             oh = st.number_input("在线学习时长", 0.0, 50.0, 5.0, 0.5)
             fam = st.selectbox("家庭支持", [1, 0], format_func=lambda x: "良好" if x==1 else "较弱")
-        submit = st.form_submit_button("🔍 一键评估风险")
+        submit = st.form_submit_button("🔍 一键评估风险并生成画像")
 
     if submit:
         input_data = pd.DataFrame([[att, hw, sh, pf, oh, fam]], columns=features)
@@ -224,7 +186,40 @@ elif page == "🧑‍🎓 单学生风险预测":
         col_res1, col_res2 = st.columns(2)
         col_res1.metric("AI 预测风险概率", f"{prob:.1%}")
         col_res2.metric("判定风险等级", level)
+
+        # 【新增功能】学生多维特征雷达图
+        st.subheader("🕸️ 学生多维特征画像")
         
+        # 数据归一化到 0-100 用于雷达图显示
+        r_att = att * 100
+        r_hw = hw * 100
+        r_sh = min(sh / 20 * 100, 100) # 假设每周学20小时满分
+        r_pf = max(100 - pf * 20, 0)   # 挂科扣分，挂5门归零
+        r_oh = min(oh / 15 * 100, 100) # 假设在线15小时满分
+        r_fam = 100 if fam == 1 else 50
+
+        categories = ['出勤率', '作业提交率', '学习时长', '历史成绩(无挂科)', '在线活跃度', '家庭支持']
+        values = [r_att, r_hw, r_sh, r_pf, r_oh, r_fam]
+
+        fig_radar = go.Figure(data=go.Scatterpolar(
+            r=values,
+            theta=categories,
+            fill='toself',
+            fillcolor='rgba(46, 204, 113, 0.3)', # 绿色半透明填充
+            line=dict(color='#2ecc71', width=2),
+            name='学生特征'
+        ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100], showticklabels=False)),
+            showlegend=False,
+            margin=dict(l=40, r=40, t=20, b=20),
+            height=350
+        )
+        # 居中显示雷达图
+        col_radar1, col_radar2, col_radar3 = st.columns([1, 2, 1])
+        with col_radar2:
+            st.plotly_chart(fig_radar, use_container_width=True)
+
         st.subheader("💡 系统自动生成的干预建议")
         suggestions = []
         if att < 0.8: suggestions.append(f"⚠️ 出勤率仅 {att:.1%}，建议辅导员约谈。")
@@ -232,38 +227,29 @@ elif page == "🧑‍🎓 单学生风险预测":
         if pf >= 1: suggestions.append(f"⚠️ 已有 {pf} 门挂科记录，建议制定复习计划。")
         if sh < 6: suggestions.append(f"⚠️ 每周学习仅 {sh:.1f} 小时，建议参加晚自习。")
         if fam == 0: suggestions.append("⚠️ 家庭支持较弱，建议加强心理关怀。")
-        
-        if not suggestions: 
-            st.success("✅ 该生各项指标良好，暂无预警风险！")
+        if not suggestions: st.success("✅ 该生各项指标良好，暂无预警风险！")
         else:
-            for s in suggestions: 
-                st.warning(s)
+            for s in suggestions: st.warning(s)
 
 # ================= 页面 4：教师干预记录 =================
 elif page == "📝 教师干预记录":
     st.title("📝 教师干预记录管理")
     proba = model.predict_proba(df[features])[:, 1]
     high_risk_ids = df[proba >= 0.7]["student_id"].tolist()
-    
-    if not high_risk_ids: 
-        st.info("当前没有高风险学生，无需干预。")
+    if not high_risk_ids: st.info("当前没有高风险学生，无需干预。")
     else:
         selected_sid = st.selectbox("选择需要干预的学生", high_risk_ids)
         with st.form("intervention_form"):
             action = st.selectbox("干预措施", ["辅导员约谈", "联系家长", "安排学业帮扶", "心理辅导"])
             note = st.text_area("备注详情", "已约定每周五下午辅导。")
             submitted = st.form_submit_button("✅ 提交干预记录")
-            
             if submitted:
                 record = pd.DataFrame([[selected_sid, action, note, pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")]], columns=["学号", "干预措施", "备注", "记录时间"])
                 file_path = "data/intervention_records.csv"
                 if not os.path.exists("data"): os.makedirs("data")
-                if os.path.exists(file_path): 
-                    record.to_csv(file_path, mode='a', header=False, index=False, encoding="utf-8-sig")
-                else: 
-                    record.to_csv(file_path, mode='w', header=True, index=False, encoding="utf-8-sig")
+                if os.path.exists(file_path): record.to_csv(file_path, mode='a', header=False, index=False, encoding="utf-8-sig")
+                else: record.to_csv(file_path, mode='w', header=True, index=False, encoding="utf-8-sig")
                 st.success(f"已成功记录对 {selected_sid} 的干预措施！")
-                
         st.divider()
         st.subheader("📜 历史干预记录")
         if os.path.exists("data/intervention_records.csv"):
@@ -273,25 +259,16 @@ elif page == "📝 教师干预记录":
 elif page == "📈 算法实验评估报告":
     st.title("📈 模型算法对比与可解释性评估")
     tab1, tab2, tab3 = st.tabs(["模型对比与调参", "SMOTE 不平衡处理", "SHAP 可解释性分析"])
-    
     with tab1:
-        if os.path.exists("output/roc_curve.png"): 
-            st.image("output/roc_curve.png", caption="模型对比")
-        else:
-            st.info("云端暂未挂载离线图表，请在本地查看。")
+        if os.path.exists("output/roc_curve.png"): st.image("output/roc_curve.png", caption="模型对比")
+        else: st.info("云端暂未挂载离线图表，请在本地查看。")
         col1, col2 = st.columns(2)
         with col1:
             if os.path.exists("output/exp1_tree_depth.png"): st.image("output/exp1_tree_depth.png")
         with col2:
             if os.path.exists("output/exp2_rf_estimators.png"): st.image("output/exp2_rf_estimators.png")
-            
     with tab2:
-        if os.path.exists("output/smote_roc.png"): 
-            st.image("output/smote_roc.png")
-            st.info("说明：SMOTE 牺牲了少许整体准确率，但极大提升了少数类（预警学生）的召回率。")
-            
+        if os.path.exists("output/smote_roc.png"): st.image("output/smote_roc.png")
     with tab3:
         if os.path.exists("output/shap_summary.png"): st.image("output/shap_summary.png", caption="全局特征影响力蜂群图")
-        if os.path.exists("output/shap_waterfall.png"): 
-            st.image("output/shap_waterfall.png", caption="单学生风险归因瀑布图")
-            st.info("说明：系统不仅能预测风险，还能清晰解释是哪个指标导致了该学生的风险。")
+        if os.path.exists("output/shap_waterfall.png"): st.image("output/shap_waterfall.png", caption="单学生风险归因瀑布图")
