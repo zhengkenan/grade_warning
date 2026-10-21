@@ -10,12 +10,12 @@
 - 部署环境：Streamlit Community Cloud
 
 📂 目录结构
-(这里贴你上面的目录树)
+
 
 🚀 运行指南
 1. 安装依赖：`pip install -r requirements.txt`
 2. 一键跑通离线实验（生成模型与所有图表）：`python main.py`
 3. 启动可视化前端系统：`streamlit run app.py`
 
-## 🌐 在线体验
+🌐 在线体验
 系统已部署至云端：https://gradewarning-zhengkaixin.streamlit.app/
