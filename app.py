@@ -3,10 +3,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import plotly.graph_objects as go  # 新增：用于画雷达图
+import plotly.graph_objects as go  # 用于画雷达图
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
+# 设置中文字体（本地生效）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 st.set_page_config(page_title="智能教务管理系统", layout="wide", page_icon="🎓")
@@ -59,6 +60,7 @@ def load_data():
         for col in required:
             if col not in df.columns: raise ValueError("列名缺失")
     except Exception:
+        # 自动生成 1000 条安全数据
         np.random.seed(42)
         N = 1000
         attendance = np.clip(np.random.normal(0.85, 0.12, N), 0.3, 1.0)
@@ -70,7 +72,12 @@ def load_data():
         risk_score = ((attendance < 0.8).astype(int) * 2 + (homework_rate < 0.7).astype(int) * 2 + (study_hours < 6).astype(int) * 1 + (past_fail >= 1).astype(int) * 2 + (online_hours < 4).astype(int) * 1 + (family_support == 0).astype(int) * 1)
         noise = np.random.choice([0, 1], N, p=[0.9, 0.1])
         label = ((risk_score + noise) >= 3).astype(int)
-        df = pd.DataFrame({"student_id": [f"S{i:04d}" for i in range(1, N+1)], "attendance": attendance.round(3), "homework_rate": homework_rate.round(3), "study_hours": study_hours.round(1), "past_fail": past_fail, "online_hours": online_hours.round(1), "family_support": family_support, "at_risk": label})
+        df = pd.DataFrame({
+            "student_id": [f"S{i:04d}" for i in range(1, N+1)], 
+            "attendance": attendance.round(3), "homework_rate": homework_rate.round(3), 
+            "study_hours": study_hours.round(1), "past_fail": past_fail, 
+            "online_hours": online_hours.round(1), "family_support": family_support, "at_risk": label
+        })
     return df.fillna(df.mean(numeric_only=True))
 
 df = load_data()
@@ -134,32 +141,59 @@ if page == "📊 教务数据看板":
     csv = show_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 导出当前名单数据 (CSV)", csv, file_name="students_data.csv", mime="text/csv")
 
-# ================= 页面 2：批量导入预测 =================
+# ================= 页面 2：批量导入预测（终极容错清洗版） =================
 elif page == "📁 批量数据导入预测":
     st.title("📁 批量学生数据导入与预测")
-    st.caption("支持上传包含学生特征的 CSV 文件，系统将实时调用机器学习模型进行批量预测。")
+    st.caption("支持上传包含学生特征的 CSV 文件，系统内置脏数据自动清洗与容错机制。")
+    
     template_df = pd.DataFrame(columns=features)
     template_df.loc[0] = [0.5, 0.5, 4.0, 2, 3.0, 0]
     st.download_button("📥 下载预测模板 (CSV格式)", template_df.to_csv(index=False, encoding="utf-8-sig"), file_name="template.csv", mime="text/csv")
     
     st.divider()
     uploaded_file = st.file_uploader("请上传 CSV 文件", type=["csv"])
+    
     if uploaded_file is not None:
         try:
             batch_df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
             batch_df.columns = batch_df.columns.str.strip()
+            
+            # 第一道防线：检查列名是否缺失
             missing_cols = [col for col in features if col not in batch_df.columns]
             if missing_cols:
                 st.error(f"导入失败！文件缺少以下必需的特征列：{missing_cols}")
             else:
-                st.success("文件解析成功！开始进行批量预测...")
+                st.success("文件解析成功！正在进行异常值清洗...")
+                
+                # 第二道防线：强制转为数字格式（遇到汉字等无法转换的变为 NaN）
+                for col in features:
+                    batch_df[col] = pd.to_numeric(batch_df[col], errors='coerce')
+                
+                # 填充无法转换的空值（缺失值用中位数填充）
+                batch_df[features] = batch_df[features].fillna(batch_df[features].median())
+                
+                # 第三道防线：业务逻辑截断（防止神仙数据）
+                batch_df["attendance"] = batch_df["attendance"].clip(0.0, 1.0)
+                batch_df["homework_rate"] = batch_df["homework_rate"].clip(0.0, 1.0)
+                batch_df["past_fail"] = batch_df["past_fail"].clip(0, 20)
+                batch_df["study_hours"] = batch_df["study_hours"].clip(0, 50)
+                batch_df["family_support"] = batch_df["family_support"].round().clip(0, 1)
+                
+                st.info("✅ 数据清洗完成！已自动过滤异常值，开始批量预测...")
+                
+                # 预测
                 probs = model.predict_proba(batch_df[features])[:, 1]
                 batch_df["预测风险概率"] = probs.round(3)
                 batch_df["预测风险等级"] = batch_df["预测风险概率"].apply(get_risk_level)
+                
+                st.subheader("📊 批量预测结果")
                 st.dataframe(batch_df, use_container_width=True)
-                st.download_button("📥 导出带预测结果的数据 (CSV)", batch_df.to_csv(index=False, encoding="utf-8-sig"), file_name="prediction_results.csv", mime="text/csv")
+                
+                result_csv = batch_df.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button("📥 导出带预测结果的数据 (CSV)", result_csv, file_name="prediction_results.csv", mime="text/csv")
+                
         except Exception as e:
-            st.error(f"文件读取失败，请检查文件格式是否正确。错误信息：{e}")
+            st.error(f"文件解析严重失败，请检查文件格式是否彻底损坏。错误信息：{e}")
 
 # ================= 页面 3：单学生预测 =================
 elif page == "🧑‍🎓 单学生风险预测":
@@ -187,15 +221,12 @@ elif page == "🧑‍🎓 单学生风险预测":
         col_res1.metric("AI 预测风险概率", f"{prob:.1%}")
         col_res2.metric("判定风险等级", level)
 
-        # 【新增功能】学生多维特征雷达图
         st.subheader("🕸️ 学生多维特征画像")
-        
-        # 数据归一化到 0-100 用于雷达图显示
         r_att = att * 100
         r_hw = hw * 100
-        r_sh = min(sh / 20 * 100, 100) # 假设每周学20小时满分
-        r_pf = max(100 - pf * 20, 0)   # 挂科扣分，挂5门归零
-        r_oh = min(oh / 15 * 100, 100) # 假设在线15小时满分
+        r_sh = min(sh / 20 * 100, 100)
+        r_pf = max(100 - pf * 20, 0)
+        r_oh = min(oh / 15 * 100, 100)
         r_fam = 100 if fam == 1 else 50
 
         categories = ['出勤率', '作业提交率', '学习时长', '历史成绩(无挂科)', '在线活跃度', '家庭支持']
@@ -205,7 +236,7 @@ elif page == "🧑‍🎓 单学生风险预测":
             r=values,
             theta=categories,
             fill='toself',
-            fillcolor='rgba(46, 204, 113, 0.3)', # 绿色半透明填充
+            fillcolor='rgba(46, 204, 113, 0.3)',
             line=dict(color='#2ecc71', width=2),
             name='学生特征'
         ))
@@ -215,7 +246,6 @@ elif page == "🧑‍🎓 单学生风险预测":
             margin=dict(l=40, r=40, t=20, b=20),
             height=350
         )
-        # 居中显示雷达图
         col_radar1, col_radar2, col_radar3 = st.columns([1, 2, 1])
         with col_radar2:
             st.plotly_chart(fig_radar, use_container_width=True)
