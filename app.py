@@ -3,11 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import plotly.graph_objects as go  # 用于画雷达图
+import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-# 设置中文字体（本地生效）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 st.set_page_config(page_title="智能教务管理系统", layout="wide", page_icon="🎓")
@@ -47,38 +46,55 @@ if st.sidebar.button("退出登录"):
     st.rerun()
 st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解释性构建。")
 
-# ================= 数据加载与模型训练 =================
+# ================= 数据加载与模型训练（史诗级数据内置） =================
 @st.cache_data
 def load_data():
-    file_path = "data/students.csv"
+    # 优先尝试读取本地（如果有的话），如果云端报错，直接触发内置生成
     try:
-        if not os.path.exists(file_path): raise FileNotFoundError("文件不存在")
+        file_path = "data/students.csv"
+        if not os.path.exists(file_path): raise FileNotFoundError
         df = pd.read_csv(file_path, encoding="utf-8-sig")
         df.columns = df.columns.str.strip()
         df["student_id"] = df["student_id"].astype(str)
         required = ["attendance", "homework_rate", "study_hours", "past_fail", "online_hours", "family_support", "at_risk"]
         for col in required:
             if col not in df.columns: raise ValueError("列名缺失")
+        return df.fillna(df.mean(numeric_only=True))
     except Exception:
-        # 自动生成 1000 条安全数据
+        # 【方案二核心逻辑：史诗级高仿真数据生成】
         np.random.seed(42)
         N = 1000
-        attendance = np.clip(np.random.normal(0.85, 0.12, N), 0.3, 1.0)
-        homework_rate = np.clip(np.random.normal(0.80, 0.15, N), 0.2, 1.0)
-        study_hours = np.clip(np.random.normal(8, 3, N), 1, 20)
-        past_fail = np.random.poisson(0.8, N)
-        online_hours = np.clip(np.random.normal(5, 2, N), 0, 15)
-        family_support = np.random.choice([0, 1], N, p=[0.35, 0.65])
-        risk_score = ((attendance < 0.8).astype(int) * 2 + (homework_rate < 0.7).astype(int) * 2 + (study_hours < 6).astype(int) * 1 + (past_fail >= 1).astype(int) * 2 + (online_hours < 4).astype(int) * 1 + (family_support == 0).astype(int) * 1)
-        noise = np.random.choice([0, 1], N, p=[0.9, 0.1])
-        label = ((risk_score + noise) >= 3).astype(int)
+        engagement = np.random.beta(5, 2, N) 
+        
+        attendance = np.clip(engagement * 0.5 + 0.4 + np.random.normal(0, 0.1, N), 0.2, 1.0)
+        homework_rate = np.clip(engagement * 0.6 + 0.3 + np.random.normal(0, 0.1, N), 0.1, 1.0)
+        study_hours = np.clip(engagement * 15 + np.random.normal(0, 2, N), 1, 30)
+        online_hours = np.clip(engagement * 10 + np.random.normal(0, 1.5, N), 0, 20)
+        
+        quiz_score = np.clip(engagement * 60 + 30 + np.random.normal(0, 8, N), 0, 100)
+        past_fail = np.random.poisson(lam=(1 - engagement) * 2.5, size=N)
+        family_support = np.random.choice([0, 1], N, p=[0.3, 0.7])
+        
+        final_score_base = quiz_score * 0.7 + attendance * 15 + homework_rate * 15 - past_fail * 4
+        sudden_event = np.random.choice([0, -25], N, p=[0.9, 0.1])
+        final_score = final_score_base + sudden_event
+        at_risk = (final_score < 60).astype(int)
+        
         df = pd.DataFrame({
-            "student_id": [f"S{i:04d}" for i in range(1, N+1)], 
-            "attendance": attendance.round(3), "homework_rate": homework_rate.round(3), 
-            "study_hours": study_hours.round(1), "past_fail": past_fail, 
-            "online_hours": online_hours.round(1), "family_support": family_support, "at_risk": label
+            "student_id": [f"S{i:04d}" for i in range(1, N+1)],
+            "attendance": attendance.round(3),
+            "homework_rate": homework_rate.round(3),
+            "study_hours": study_hours.round(1),
+            "past_fail": past_fail,
+            "online_hours": online_hours.round(1),
+            "family_support": family_support,
+            "at_risk": at_risk
         })
-    return df.fillna(df.mean(numeric_only=True))
+        # 模拟少量缺失值
+        for col in ["attendance", "homework_rate", "study_hours"]:
+            idx = np.random.choice(N, size=int(N*0.015), replace=False)
+            df.loc[idx, col] = np.nan
+        return df.fillna(df.mean(numeric_only=True))
 
 df = load_data()
 features = ["attendance", "homework_rate", "study_hours", "past_fail", "online_hours", "family_support"]
@@ -141,7 +157,7 @@ if page == "📊 教务数据看板":
     csv = show_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 导出当前名单数据 (CSV)", csv, file_name="students_data.csv", mime="text/csv")
 
-# ================= 页面 2：批量导入预测（终极容错清洗版） =================
+# ================= 页面 2：批量导入预测 =================
 elif page == "📁 批量数据导入预测":
     st.title("📁 批量学生数据导入与预测")
     st.caption("支持上传包含学生特征的 CSV 文件，系统内置脏数据自动清洗与容错机制。")
@@ -158,21 +174,15 @@ elif page == "📁 批量数据导入预测":
             batch_df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
             batch_df.columns = batch_df.columns.str.strip()
             
-            # 第一道防线：检查列名是否缺失
             missing_cols = [col for col in features if col not in batch_df.columns]
             if missing_cols:
                 st.error(f"导入失败！文件缺少以下必需的特征列：{missing_cols}")
             else:
                 st.success("文件解析成功！正在进行异常值清洗...")
-                
-                # 第二道防线：强制转为数字格式（遇到汉字等无法转换的变为 NaN）
                 for col in features:
                     batch_df[col] = pd.to_numeric(batch_df[col], errors='coerce')
-                
-                # 填充无法转换的空值（缺失值用中位数填充）
                 batch_df[features] = batch_df[features].fillna(batch_df[features].median())
                 
-                # 第三道防线：业务逻辑截断（防止神仙数据）
                 batch_df["attendance"] = batch_df["attendance"].clip(0.0, 1.0)
                 batch_df["homework_rate"] = batch_df["homework_rate"].clip(0.0, 1.0)
                 batch_df["past_fail"] = batch_df["past_fail"].clip(0, 20)
@@ -181,7 +191,6 @@ elif page == "📁 批量数据导入预测":
                 
                 st.info("✅ 数据清洗完成！已自动过滤异常值，开始批量预测...")
                 
-                # 预测
                 probs = model.predict_proba(batch_df[features])[:, 1]
                 batch_df["预测风险概率"] = probs.round(3)
                 batch_df["预测风险等级"] = batch_df["预测风险概率"].apply(get_risk_level)
