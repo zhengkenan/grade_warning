@@ -46,10 +46,9 @@ if st.sidebar.button("退出登录"):
     st.rerun()
 st.sidebar.info("💡 提示：本系统基于随机森林算法与 XAI 归因构建。")
 
-# ================= 数据加载与模型训练（史诗级数据内置） =================
+# ================= 数据加载与模型训练 =================
 @st.cache_data
 def load_data():
-    # 优先尝试读取本地（如果有的话），如果云端报错，直接触发内置生成
     try:
         file_path = "data/students.csv"
         if not os.path.exists(file_path): raise FileNotFoundError
@@ -61,7 +60,7 @@ def load_data():
             if col not in df.columns: raise ValueError("列名缺失")
         return df.fillna(df.mean(numeric_only=True))
     except Exception:
-        # 【修改核心：拉大挂科数的权重，让 past_fail 成为绝对的主导因素】
+        # 【核心修复：彻底抛弃隐藏特征，只用这 6 个特征生成符合常识的标签】
         np.random.seed(42)
         N = 1000
         engagement = np.random.beta(5, 2, N) 
@@ -70,29 +69,27 @@ def load_data():
         homework_rate = np.clip(engagement * 0.6 + 0.3 + np.random.normal(0, 0.1, N), 0.1, 1.0)
         study_hours = np.clip(engagement * 15 + np.random.normal(0, 2, N), 1, 30)
         online_hours = np.clip(engagement * 10 + np.random.normal(0, 1.5, N), 0, 20)
-        
-        quiz_score = np.clip(engagement * 60 + 30 + np.random.normal(0, 8, N), 0, 100)
-        
-        # 挂科数分布：如果积极性低，挂科数会显著增加
-        past_fail = np.random.poisson(lam=(1 - engagement) * 4.0, size=N) 
-        
+        past_fail = np.random.poisson(lam=(1 - engagement) * 3.0, size=N)
         family_support = np.random.choice([0, 1], N, p=[0.3, 0.7])
         
-        # 【终极改版】挂科一票否决制：只要 past_fail >= 2，直接扣大分
+        # 风险积分制：满分无扣分，扣满 40 分即判定为高风险
         risk_score = (
-            quiz_score * 0.4                     # 成绩占比降低
-            + attendance * 10                    # 出勤率
-            + homework_rate * 10                 # 作业率
-            - past_fail * 15                     # 🔥 挂科惩罚极重：挂1科扣15分，挂2科扣30分
-            + family_support * 5                 # 家庭支持
+            (attendance < 0.6).astype(int) * 20 +
+            (attendance < 0.8).astype(int) * 10 +
+            (homework_rate < 0.6).astype(int) * 20 +
+            (homework_rate < 0.8).astype(int) * 10 +
+            (study_hours < 5).astype(int) * 10 +
+            (online_hours < 3).astype(int) * 5 +
+            (family_support == 0).astype(int) * 5 +
+            past_fail * 30  # 挂 1 科直接扣 30 分（一票否决边缘）
         )
         
-        # 加入正态分布随机噪声（模拟突发状况、老师压分等不可控因素）
-        noise = np.random.normal(0, 8, N)
-        final_score = risk_score + noise
+        # 加入随机噪声（模拟突发状况），噪声标准差设小一点，避免好学生被误伤
+        noise = np.random.normal(0, 10, N)
+        total_risk_score = risk_score + noise
         
-        # 如果最终得分低于 55 分，判定为高风险
-        at_risk = (final_score < 55).astype(int)
+        # 总分扣分 >= 40 判定为高风险
+        at_risk = (total_risk_score >= 40).astype(int)
         
         df = pd.DataFrame({
             "student_id": [f"S{i:04d}" for i in range(1, N+1)],
@@ -116,8 +113,8 @@ features = ["attendance", "homework_rate", "study_hours", "past_fail", "online_h
 @st.cache_resource
 def train_model(data):
     X_train, _, y_train, _ = train_test_split(data[features], data["at_risk"], test_size=0.2, random_state=42, stratify=data["at_risk"])
-    # 增加模型复杂度，让模型能更明显地捕捉挂科数的非线性影响
-    return RandomForestClassifier(n_estimators=200, max_depth=8, random_state=42).fit(X_train, y_train)
+    # 树多一点，深度深一点，让模型能完美抓住“扣分规则”
+    return RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42).fit(X_train, y_train)
 
 model = train_model(df)
 
