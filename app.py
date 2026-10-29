@@ -44,7 +44,7 @@ st.sidebar.markdown("---")
 if st.sidebar.button("退出登录"):
     st.session_state.logged_in = False
     st.rerun()
-st.sidebar.info("💡 提示：本系统基于随机森林算法与 SHAP 可解释性构建。")
+st.sidebar.info("💡 提示：本系统基于随机森林算法与 XAI 归因构建。")
 
 # ================= 数据加载与模型训练（史诗级数据内置） =================
 @st.cache_data
@@ -61,7 +61,7 @@ def load_data():
             if col not in df.columns: raise ValueError("列名缺失")
         return df.fillna(df.mean(numeric_only=True))
     except Exception:
-        # 【方案二核心逻辑：史诗级高仿真数据生成】
+        # 【修改核心：拉大挂科数的权重，让 past_fail 成为绝对的主导因素】
         np.random.seed(42)
         N = 1000
         engagement = np.random.beta(5, 2, N) 
@@ -72,13 +72,27 @@ def load_data():
         online_hours = np.clip(engagement * 10 + np.random.normal(0, 1.5, N), 0, 20)
         
         quiz_score = np.clip(engagement * 60 + 30 + np.random.normal(0, 8, N), 0, 100)
-        past_fail = np.random.poisson(lam=(1 - engagement) * 2.5, size=N)
+        
+        # 挂科数分布：如果积极性低，挂科数会显著增加
+        past_fail = np.random.poisson(lam=(1 - engagement) * 4.0, size=N) 
+        
         family_support = np.random.choice([0, 1], N, p=[0.3, 0.7])
         
-        final_score_base = quiz_score * 0.7 + attendance * 15 + homework_rate * 15 - past_fail * 4
-        sudden_event = np.random.choice([0, -25], N, p=[0.9, 0.1])
-        final_score = final_score_base + sudden_event
-        at_risk = (final_score < 60).astype(int)
+        # 【终极改版】挂科一票否决制：只要 past_fail >= 2，直接扣大分
+        risk_score = (
+            quiz_score * 0.4                     # 成绩占比降低
+            + attendance * 10                    # 出勤率
+            + homework_rate * 10                 # 作业率
+            - past_fail * 15                     # 🔥 挂科惩罚极重：挂1科扣15分，挂2科扣30分
+            + family_support * 5                 # 家庭支持
+        )
+        
+        # 加入正态分布随机噪声（模拟突发状况、老师压分等不可控因素）
+        noise = np.random.normal(0, 8, N)
+        final_score = risk_score + noise
+        
+        # 如果最终得分低于 55 分，判定为高风险
+        at_risk = (final_score < 55).astype(int)
         
         df = pd.DataFrame({
             "student_id": [f"S{i:04d}" for i in range(1, N+1)],
@@ -102,7 +116,8 @@ features = ["attendance", "homework_rate", "study_hours", "past_fail", "online_h
 @st.cache_resource
 def train_model(data):
     X_train, _, y_train, _ = train_test_split(data[features], data["at_risk"], test_size=0.2, random_state=42, stratify=data["at_risk"])
-    return RandomForestClassifier(n_estimators=150, max_depth=5, random_state=42).fit(X_train, y_train)
+    # 增加模型复杂度，让模型能更明显地捕捉挂科数的非线性影响
+    return RandomForestClassifier(n_estimators=200, max_depth=8, random_state=42).fit(X_train, y_train)
 
 model = train_model(df)
 
@@ -140,7 +155,9 @@ if page == "📊 教务数据看板":
         st.subheader("特征重要性（XAI 归因）")
         imp = pd.Series(model.feature_importances_, index=features).sort_values()
         fig2, ax2 = plt.subplots()
-        imp.plot(kind="barh", color="steelblue", ax=ax2)
+        # 突出显示挂科数（用红色）
+        colors = ['#e74c3c' if x == 'past_fail' else 'steelblue' for x in imp.index]
+        imp.plot(kind="barh", color=colors, ax=ax2)
         st.pyplot(fig2)
 
     st.divider()
