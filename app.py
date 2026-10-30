@@ -1741,7 +1741,12 @@ for image_name, image_title in experiment_images:
 
     if os.path.isfile(image_path):
         st.markdown(f"**{image_title}**")
+        
+    if image_name == "shap_waterfall.png":
+        st.image(image_path, width=850)
+    else:
         st.image(image_path, width=650)
+
         found_images = True
 
 
