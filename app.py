@@ -94,3 +94,12 @@ FEATURE_LABELS = {
     "homework_rate": "作业完成率",
     "study_hours": "学习时长",
     "past_fail": "以往挂科情况",
+    "online_hours": "在线学习时长",
+    "family_support": "家庭支持"
+}
+
+RISK_COLORS = {
+    "高风险": "#E45756",
+    "中风险": "#F2CF5B",
+    "低风险": "#54A24B"
+}
