@@ -7,6 +7,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import mpl_tc_fonts
+
+mpl_tc_fonts.load_font("noto", "copy")
+mpl_tc_fonts.set_font("Noto Sans CJK TC")
+
+plt.rcParams["axes.unicode_minus"] = False
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
