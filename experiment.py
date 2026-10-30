@@ -116,7 +116,12 @@ def load_data():
             "请确认 students.csv 位于项目的 data 文件夹中。"
         )
 
-    df = pd.read_csv(DATA_PATH, encoding="utf-8-sig")
+   df = pd.read_csv(
+    DATA_PATH,
+    encoding="utf-8-sig",
+    sep=None,
+    engine="python"
+)
     df.columns = [
         str(column).replace("\ufeff", "").strip()
         for column in df.columns
