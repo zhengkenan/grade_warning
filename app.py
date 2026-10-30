@@ -11,6 +11,53 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
 # =========================================================
+# 自动执行实验脚本，并在完成后刷新页面
+# 必须放在实验报告页面的所有图片展示代码之前
+# =========================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EXPERIMENT_PATH = os.path.join(BASE_DIR, "experiment.py")
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+if "experiment_auto_run_done" not in st.session_state:
+    st.session_state["experiment_auto_run_done"] = False
+
+if not st.session_state["experiment_auto_run_done"]:
+    if not os.path.isfile(EXPERIMENT_PATH):
+        st.error("未找到 experiment.py，请检查 GitHub 仓库根目录。")
+        st.stop()
+
+    with st.spinner("正在进行模型参数实验与 SHAP 分析，请稍候……"):
+        try:
+            result = subprocess.run(
+                [sys.executable, "-u", EXPERIMENT_PATH],
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+
+            if result.returncode != 0:
+                st.error("实验脚本执行失败：")
+                st.code(result.stderr or result.stdout or "没有返回具体错误信息")
+                st.stop()
+
+            st.session_state["experiment_auto_run_done"] = True
+
+        except subprocess.TimeoutExpired:
+            st.error("实验运行超过 10 分钟，已超时停止。")
+            st.stop()
+
+        except Exception as exc:
+            st.error(f"实验执行失败：{exc}")
+            st.stop()
+
+    # 脚本生成图片后刷新页面，让后面的展示代码重新读取图片
+    st.rerun()
+
+# =========================================================
 # Matplotlib 中文字体配置
 # =========================================================
 plt.rcParams["axes.unicode_minus"] = False
