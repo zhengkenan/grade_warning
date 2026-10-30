@@ -16,6 +16,28 @@ import numpy as np
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+font_paths = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+]
+
+font_loaded = False
+
+for font_path in font_paths:
+    if os.path.exists(font_path):
+        fm.fontManager.addfont(font_path)
+        font_name = fm.FontProperties(fname=font_path).get_name()
+        plt.rcParams["font.family"] = font_name
+        font_loaded = True
+        print(f"中文字体加载成功：{font_name}")
+        break
+
+plt.rcParams["axes.unicode_minus"] = False
+
+if not font_loaded:
+    print("警告：未找到中文字体文件")
 
 # 设置中文字体，适配 Streamlit Cloud 的 Linux 环境
 plt.rcParams["font.sans-serif"] = [
