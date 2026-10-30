@@ -7,3 +7,4 @@ shap==0.44.0
 imbalanced-learn
 seaborn
 plotly
+mpl-tc-fonts
