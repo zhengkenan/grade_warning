@@ -1735,13 +1735,15 @@ experiment_images = [
 
 found_images = False
 
+
 for image_name, image_title in experiment_images:
     image_path = os.path.join(output_dir, image_name)
 
     if os.path.isfile(image_path):
         st.markdown(f"**{image_title}**")
-        st.image(image_path, use_container_width=True)
+        st.image(image_path, width=650)
         found_images = True
+
 
 if not found_images and st.session_state.get("experiment_run_success"):
     st.warning("实验已执行，但没有找到生成的图片，请检查 experiment.py 的输出路径。")
