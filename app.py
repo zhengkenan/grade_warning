@@ -1,66 +1,76 @@
-
-# -*- coding: utf-8 -*-
-"""
-学生学业成绩预警系统
-功能：
-1. 学业预警看板
-2. 批量学生预警
-3. 单个学生预警
-4. 干预记录管理
-5. 实验报告查看
-
-数据文件：data/students.csv
-模型文件：models/final_model.pkl
-模型配置：models/config.json
-"""
-
 import os
-import json
+import io
+import csv
 import warnings
-from datetime import datetime
-
-import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
+# =========================================================
+# Matplotlib 中文字体配置
+# =========================================================
+plt.rcParams["axes.unicode_minus"] = False
+
+CHINESE_FONT_PATHS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+]
+
+CHINESE_FONT_NAME = None
+for font_path in CHINESE_FONT_PATHS:
+    if os.path.exists(font_path):
+        try:
+            font_manager.fontManager.addfont(font_path)
+            CHINESE_FONT_NAME = font_manager.FontProperties(
+                fname=font_path
+            ).get_name()
+            break
+        except Exception as font_error:
+            print(f"中文字体加载失败：{font_path}；原因：{font_error}")
+
+if CHINESE_FONT_NAME:
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = [CHINESE_FONT_NAME, "DejaVu Sans"]
+    print(f"已加载中文字体：{CHINESE_FONT_NAME}")
+else:
+    print("警告：未找到 Noto CJK 中文字体，请检查 packages.txt 和部署日志。")
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
     recall_score,
     f1_score,
     roc_auc_score,
+    roc_curve,
     confusion_matrix,
-    classification_report,
+    classification_report
 )
 
-warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore")
 
-# ============================================================
-# 一、页面配置
-# ============================================================
+# =========================================================
+# 1. 页面配置与全局参数
+# =========================================================
 
 st.set_page_config(
     page_title="学生学业成绩预警系统",
     page_icon="🎓",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="wide"
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 DATA_PATH = os.path.join(BASE_DIR, "data", "students.csv")
-MODEL_PATH = os.path.join(BASE_DIR, "models", "final_model.pkl")
-CONFIG_PATH = os.path.join(BASE_DIR, "models", "config.json")
-INTERVENTION_PATH = os.path.join(
-    BASE_DIR, "data", "intervention_records.csv"
-)
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+RECORD_PATH = os.path.join(BASE_DIR, "data", "intervention_records.csv")
 
 FEATURES = [
     "attendance",
@@ -68,1172 +78,1322 @@ FEATURES = [
     "study_hours",
     "past_fail",
     "online_hours",
-    "family_support",
+    "family_support"
 ]
 
-FEATURE_NAMES = {
+TARGET = "at_risk"
+REQUIRED_COLUMNS = ["student_id"] + FEATURES + [TARGET]
+
+FEATURE_LABELS = {
     "attendance": "出勤率",
     "homework_rate": "作业完成率",
     "study_hours": "学习时长",
     "past_fail": "以往挂科情况",
-    "online_hours": "线上学习时长",
-    "family_support": "家庭支持程度",
+    "online_hours": "在线学习时长",
+    "family_support": "家庭支持"
 }
 
-TARGET = "at_risk"
-
-os.makedirs(os.path.dirname(INTERVENTION_PATH), exist_ok=True)
-
-# 中文图表字体
-plt.rcParams["font.sans-serif"] = [
-    "Microsoft YaHei",
-    "SimHei",
-    "Noto Sans CJK SC",
-    "Arial Unicode MS",
-]
-plt.rcParams["axes.unicode_minus"] = False
+RISK_COLORS = {
+    "高风险": "#E45756",
+    "中风险": "#F2CF5B",
+    "低风险": "#54A24B"
+}
 
 
-# ============================================================
-# 二、通用函数
-# ============================================================
+# =========================================================
+# 2. CSV 读取、数据检查与演示数据
+# =========================================================
 
-def show_header():
-    st.title("🎓 学生学业成绩预警系统")
-    st.caption(
-        "基于机器学习的学业风险识别、风险分析与学生干预管理"
+def read_csv_robust(source):
+    """读取逗号、制表符或分号分隔的 CSV，并清理列名。"""
+
+    if isinstance(source, str):
+        with open(source, "r", encoding="utf-8-sig", errors="replace") as f:
+            sample = f.read(8192)
+
+        try:
+            delimiter = csv.Sniffer().sniff(
+                sample, delimiters=",\t;"
+            ).delimiter
+        except csv.Error:
+            delimiter = ","
+
+        df = pd.read_csv(
+            source,
+            sep=delimiter,
+            encoding="utf-8-sig",
+            skipinitialspace=True
+        )
+    else:
+        raw = source.getvalue()
+        sample = raw[:8192].decode("utf-8-sig", errors="replace")
+
+        try:
+            delimiter = csv.Sniffer().sniff(
+                sample, delimiters=",\t;"
+            ).delimiter
+        except csv.Error:
+            delimiter = ","
+
+        df = pd.read_csv(
+            io.BytesIO(raw),
+            sep=delimiter,
+            encoding="utf-8-sig",
+            skipinitialspace=True
+        )
+
+    df.columns = [
+        str(c).replace("\ufeff", "").strip()
+        for c in df.columns
+    ]
+
+    return df
+
+
+def make_demo_data(n=300):
+    """仅在仓库不存在学生数据文件时生成演示数据。"""
+
+    rng = np.random.default_rng(42)
+
+    attendance = rng.uniform(0.45, 1.0, n)
+    homework_rate = rng.uniform(0.35, 1.0, n)
+    study_hours = rng.uniform(0, 6, n)
+    past_fail = rng.integers(0, 4, n)
+    online_hours = rng.uniform(0, 8, n)
+    family_support = rng.integers(0, 2, n)
+
+    score = (
+        1.8 * (1 - attendance)
+        + 1.5 * (1 - homework_rate)
+        + 0.35 * past_fail
+        - 0.20 * study_hours
+        + 0.06 * online_hours
+        - 0.20 * family_support
+        + rng.normal(0, 0.25, n)
     )
 
+    threshold = np.median(score)
 
-def load_config():
-    """读取训练阶段保存的模型配置。"""
-    if not os.path.exists(CONFIG_PATH):
-        return {}
+    return pd.DataFrame({
+        "student_id": [f"S{i + 1:04d}" for i in range(n)],
+        "attendance": attendance.round(3),
+        "homework_rate": homework_rate.round(3),
+        "study_hours": study_hours.round(2),
+        "past_fail": past_fail,
+        "online_hours": online_hours.round(2),
+        "family_support": family_support,
+        "at_risk": (score >= threshold).astype(int)
+    })
 
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as file:
-            config = json.load(file)
-        return config if isinstance(config, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
 
+@st.cache_data
+def load_data():
+    """加载并验证学生数据。"""
 
-def load_student_data():
-    """读取并校验学生数据。"""
     if not os.path.exists(DATA_PATH):
-        st.error(f"找不到学生数据文件：{DATA_PATH}")
-        st.info(
-            "请确认仓库中存在 data/students.csv，"
-            "且文件包含六个特征列和 at_risk 标签列。"
+        st.warning(
+            "未找到 data/students.csv，当前使用自动生成的演示数据。"
         )
-        st.stop()
+        return make_demo_data()
 
     try:
-        df = pd.read_csv(DATA_PATH)
-    except Exception as exc:
-        st.error(f"读取学生数据失败：{exc}")
-        st.stop()
+        df = read_csv_robust(DATA_PATH)
+    except Exception as e:
+        raise ValueError(f"读取学生数据失败：{e}")
 
-    # 兼容部分文件使用制表符分隔的情况
-    if len(df.columns) == 1 and "\t" in str(df.columns[0]):
-        try:
-            df = pd.read_csv(DATA_PATH, sep="\t")
-        except Exception:
-            pass
+    df.columns = [
+        str(c).replace("\ufeff", "").strip()
+        for c in df.columns
+    ]
 
-    # 去除列名两端的空格
-    df.columns = df.columns.astype(str).str.strip()
-
-    required = FEATURES + [TARGET]
-    missing = [column for column in required if column not in df.columns]
+    missing = [
+        c for c in REQUIRED_COLUMNS
+        if c not in df.columns
+    ]
 
     if missing:
-        st.error(f"学生数据缺少必要字段：{', '.join(missing)}")
-        st.write("当前读取到的字段：", list(df.columns))
-        st.stop()
-
-    # 特征和标签转成数值类型
-    for column in required:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
-
-    # 标签缺失的记录不能用于监督学习
-    df = df.dropna(subset=[TARGET]).copy()
-
-    # 只保留二分类标签 0 和 1
-    df = df[df[TARGET].isin([0, 1])].copy()
-    df[TARGET] = df[TARGET].astype(int)
-
-    if df.empty:
-        st.error("清洗后没有可用的学生数据。")
-        st.stop()
-
-    # 清理无穷值；特征缺失值在模型 Pipeline 中填补
-    df[FEATURES] = df[FEATURES].replace(
-        [np.inf, -np.inf], np.nan
-    )
-
-    if df[TARGET].nunique() < 2:
-        st.error(
-            "at_risk 标签只有一个类别，无法训练二分类模型。"
-        )
-        st.stop()
-
-    if df[FEATURES].isna().all(axis=1).all():
-        st.error("所有学生的特征均为空，无法进行预测。")
-        st.stop()
-
-    # 如果原始数据没有学号，生成一个展示用编号
-    if "student_id" not in df.columns:
-        df.insert(
-            0,
-            "student_id",
-            [f"STU{i + 1:04d}" for i in range(len(df))]
-        )
-    else:
-        df["student_id"] = df["student_id"].fillna("").astype(str)
-        empty_id = df["student_id"].str.strip().eq("")
-        df.loc[empty_id, "student_id"] = [
-            f"STU{i + 1:04d}" for i in range(empty_id.sum())
-        ]
-
-    return df.reset_index(drop=True)
-
-
-def get_risk_thresholds(config):
-    """
-    优先读取训练配置中的阈值。
-
-    支持配置：
-    high_threshold / medium_threshold
-    decision_threshold / threshold
-
-    若没有配置，使用明确标注的演示默认值。
-    """
-    high = config.get(
-        "high_threshold",
-        config.get("decision_threshold", config.get("threshold", 0.5)),
-    )
-    medium = config.get("medium_threshold", 0.3)
-
-    try:
-        high = float(high)
-        medium = float(medium)
-    except (TypeError, ValueError):
-        high, medium = 0.5, 0.3
-
-    high = float(np.clip(high, 0.01, 0.99))
-    medium = float(np.clip(medium, 0.0, 0.98))
-
-    if medium >= high:
-        medium = max(0.0, high - 0.1)
-
-    return high, medium
-
-
-def get_positive_probability(model, X):
-    """获取 at_risk=1 对应的预测概率。"""
-    if not hasattr(model, "predict_proba"):
         raise ValueError(
-            "当前模型没有 predict_proba 方法，"
-            "请检查训练脚本导出的模型。"
+            f"学生数据缺少字段：{missing}。"
+            f"实际读取到的字段：{df.columns.tolist()}"
         )
 
-    probabilities = model.predict_proba(X)
-    classes = list(model.classes_)
+    df = df[REQUIRED_COLUMNS].copy()
+    df["student_id"] = df["student_id"].astype(str).str.strip()
 
-    if 1 not in classes:
-        raise ValueError("模型类别中没有 at_risk=1。")
-
-    positive_index = classes.index(1)
-    return probabilities[:, positive_index]
-
-
-def classify_risk(probability, high_threshold, medium_threshold):
-    """将风险概率划分为高、中、低三个等级。"""
-    if probability >= high_threshold:
-        return "高风险"
-    if probability >= medium_threshold:
-        return "中风险"
-    return "低风险"
-
-
-def risk_advice(row, risk_level):
-    """根据风险等级和学生特征生成辅助建议。"""
-    advice = []
-
-    if risk_level == "高风险":
-        advice.append("建议辅导员优先联系学生，核实近期学习情况。")
-    elif risk_level == "中风险":
-        advice.append("建议持续跟踪学习表现，安排阶段性检查。")
-    else:
-        advice.append("建议维持当前学习支持，并定期复查。")
-
-    attendance = row.get("attendance", np.nan)
-    homework = row.get("homework_rate", np.nan)
-    study_hours = row.get("study_hours", np.nan)
-    past_fail = row.get("past_fail", np.nan)
-
-    if pd.notna(attendance) and attendance < 0.8:
-        advice.append("出勤指标偏低，建议核查缺勤原因。")
-
-    if pd.notna(homework) and homework < 0.6:
-        advice.append("作业完成情况偏低，建议制定补交计划。")
-
-    if pd.notna(study_hours) and study_hours < 2:
-        advice.append("学习时长较少，可协助制定每周学习计划。")
-
-    if pd.notna(past_fail) and past_fail > 0:
-        advice.append("存在以往挂科记录，建议关注相关课程的补修情况。")
-
-    return "；".join(advice)
-
-
-# ============================================================
-# 三、模型加载和备用训练
-# ============================================================
-
-@st.cache_resource(show_spinner="正在加载学业预警模型……")
-def load_model_and_config(data_path, model_path, config_path):
-    """
-    优先加载正式训练模型。
-    如果模型文件不存在，则使用备用网格搜索训练。
-
-    正式实验建议先运行独立训练脚本，生成 final_model.pkl
-    和 config.json，再部署本应用。
-    """
-    config = {}
-
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as file:
-                config = json.load(file)
-        except Exception:
-            config = {}
-
-    if os.path.exists(model_path):
-        try:
-            model = joblib.load(model_path)
-
-            if isinstance(model, dict) and "model" in model:
-                # 兼容以字典形式保存模型的情况
-                model = model["model"]
-
-            if hasattr(model, "predict_proba") and hasattr(model, "classes_"):
-                return model, config, "已加载训练阶段保存的模型"
-
-        except Exception as exc:
-            st.warning(
-                f"正式模型加载失败，将尝试备用训练。原因：{exc}"
-            )
-
-    # 备用训练：只在模型文件不存在或无法加载时运行
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"找不到数据文件：{data_path}")
-
-    df = pd.read_csv(data_path)
-
-    if len(df.columns) == 1 and "\t" in str(df.columns[0]):
-        df = pd.read_csv(data_path, sep="\t")
-
-    df.columns = df.columns.astype(str).str.strip()
-
-    required = FEATURES + [TARGET]
-    missing = [col for col in required if col not in df.columns]
-
-    if missing:
-        raise ValueError(f"备用训练缺少字段：{missing}")
-
-    for col in required:
+    for col in FEATURES + [TARGET]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=[TARGET])
     df = df[df[TARGET].isin([0, 1])].copy()
-    df[FEATURES] = df[FEATURES].replace(
-        [np.inf, -np.inf], np.nan
+
+    if df.empty:
+        raise ValueError("没有有效的 at_risk 标签，请检查是否为 0 或 1。")
+
+    if df[TARGET].nunique() < 2:
+        raise ValueError(
+            "at_risk 必须同时包含 0 和 1 两类数据，才能训练分类模型。"
+        )
+
+    all_missing = df[FEATURES].isna().all()
+    if all_missing.any():
+        bad = all_missing[all_missing].index.tolist()
+        raise ValueError(f"以下特征列没有有效数值：{bad}")
+
+    if len(df) < 10:
+        raise ValueError("有效学生数据少于 10 条，请检查数据文件。")
+
+    return df.reset_index(drop=True)
+
+
+# =========================================================
+# 3. 机器学习模型与特征重要性
+# =========================================================
+
+def build_models():
+    """建立三种待比较的分类模型。"""
+
+    return {
+        "逻辑回归": Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("model", LogisticRegression(
+                max_iter=1000,
+                random_state=42
+            ))
+        ]),
+
+        "决策树": Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", DecisionTreeClassifier(
+                max_depth=5,
+                random_state=42
+            ))
+        ]),
+
+        "随机森林": Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            ))
+        ])
+    }
+
+
+@st.cache_resource
+def train_model(data):
+    """
+    在训练集上进行交叉验证和模型比较；
+    在独立测试集上评估模型；
+    最后使用全部数据训练用于系统预测的模型。
+    """
+
+    X = data[FEATURES].copy()
+    y = data[TARGET].astype(int)
+
+    class_counts = y.value_counts()
+
+    if class_counts.min() < 2:
+        raise ValueError(
+            "风险类别中至少有一类不足 2 条数据，无法进行分层训练。"
+        )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y
     )
 
-    X = df[FEATURES]
-    y = df[TARGET].astype(int)
+    folds = min(5, int(y_train.value_counts().min()))
 
-    if y.nunique() < 2 or y.value_counts().min() < 2:
-        raise ValueError("每个风险类别至少需要两条记录才能进行备用训练。")
-
-    min_class_count = int(y.value_counts().min())
-    n_splits = min(5, min_class_count)
-
-    pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        (
-            "model",
-            RandomForestClassifier(
-                random_state=42,
-                class_weight="balanced",
-                n_jobs=-1,
-            ),
-        ),
-    ])
-
-    param_grid = {
-        "model__n_estimators": [100, 200],
-        "model__max_depth": [None, 5, 10],
-        "model__min_samples_leaf": [1, 3],
-    }
+    if folds < 2:
+        raise ValueError("训练数据不足，无法进行交叉验证。")
 
     cv = StratifiedKFold(
-        n_splits=n_splits,
+        n_splits=folds,
         shuffle=True,
-        random_state=42,
+        random_state=42
     )
 
-    search = GridSearchCV(
-        estimator=pipeline,
-        param_grid=param_grid,
-        scoring="recall",
-        cv=cv,
-        n_jobs=-1,
-        refit=True,
-    )
+    models = build_models()
 
-    search.fit(X, y)
+    rows = []
+    roc_data = {}
 
-    # 使用交叉验证召回率选出的最佳参数，在全部可用数据上重训
-    model = search.best_estimator_
+    best_name = None
+    best_cv_auc = -1.0
+    best_test_model = None
 
-    config = {
-        **config,
-        "high_threshold": config.get(
-            "high_threshold",
-            config.get("decision_threshold", 0.5),
-        ),
-        "medium_threshold": config.get("medium_threshold", 0.3),
-        "model_source": "备用网格搜索模型",
-        "best_params": search.best_params_,
-        "cv_recall": float(search.best_score_),
-    }
-
-    return model, config, "备用模型：随机森林网格搜索（以召回率为选择指标）"
-
-
-@st.cache_data(show_spinner=False)
-def get_model_predictions(data_signature, _model, df):
-    """为当前数据生成模型预测结果。"""
-    X = df[FEATURES]
-    probabilities = get_positive_probability(_model, X)
-    return probabilities
-
-
-# ============================================================
-# 四、数据准备
-# ============================================================
-
-@st.cache_data(show_spinner=False)
-def prepare_data(df, probabilities, high_threshold, medium_threshold):
-    result = df.copy()
-
-    result["risk_probability"] = probabilities
-    result["risk_level"] = result["risk_probability"].apply(
-        lambda p: classify_risk(
-            p, high_threshold, medium_threshold
-        )
-    )
-
-    result["risk_probability_pct"] = (
-        result["risk_probability"] * 100
-    ).round(2)
-
-    result["risk_advice"] = result.apply(
-        lambda row: risk_advice(row, row["risk_level"]),
-        axis=1,
-    )
-
-    return result
-
-
-def format_feature_table(df):
-    """将内部特征名转成中文展示名。"""
-    table = df.copy()
-    return table.rename(columns=FEATURE_NAMES)
-
-
-def show_risk_distribution(df, column="risk_level"):
-    counts = (
-        df[column]
-        .value_counts()
-        .reindex(["高风险", "中风险", "低风险"], fill_value=0)
-    )
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    bars = ax.bar(
-        counts.index,
-        counts.values,
-        color=["#D9534F", "#E6A23C", "#49A078"],
-    )
-
-    ax.set_title("学生风险等级分布")
-    ax.set_xlabel("风险等级")
-    ax.set_ylabel("学生人数")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-
-    for bar, value in zip(bars, counts.values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height(),
-            str(int(value)),
-            ha="center",
-            va="bottom",
+    for name, estimator in models.items():
+        auc_scores = cross_val_score(
+            estimator,
+            X_train,
+            y_train,
+            cv=cv,
+            scoring="roc_auc",
+            n_jobs=1
         )
 
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+        estimator.fit(X_train, y_train)
 
+        test_prob = estimator.predict_proba(X_test)[:, 1]
+        test_pred = (test_prob >= 0.5).astype(int)
 
-def show_feature_importance(model):
-    """展示随机森林或 Pipeline 中的特征重要性。"""
-    actual_model = model
+        test_auc = roc_auc_score(y_test, test_prob)
+        fpr, tpr, _ = roc_curve(y_test, test_prob)
 
-    if hasattr(model, "named_steps"):
-        actual_model = model.named_steps.get("model", model)
+        roc_data[name] = {
+            "fpr": fpr,
+            "tpr": tpr,
+            "auc": float(test_auc)
+        }
 
-    if not hasattr(actual_model, "feature_importances_"):
-        st.info("当前模型不支持直接展示树模型特征重要性。")
-        return
-
-    importances = np.asarray(actual_model.feature_importances_)
-    importance_df = pd.DataFrame({
-        "特征": [FEATURE_NAMES.get(f, f) for f in FEATURES],
-        "重要性": importances,
-    }).sort_values("重要性", ascending=True)
-
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.barh(
-        importance_df["特征"],
-        importance_df["重要性"],
-        color="#4C78A8",
-    )
-    ax.set_title("模型特征重要性")
-    ax.set_xlabel("重要性")
-    ax.grid(axis="x", linestyle="--", alpha=0.3)
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-    with st.expander("查看特征重要性明细"):
-        st.dataframe(
-            importance_df.sort_values("重要性", ascending=False),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-def make_download_button(df, filename, label="下载 CSV"):
-    content = df.to_csv(index=False, encoding="utf-8-sig")
-    st.download_button(
-        label=label,
-        data=content,
-        file_name=filename,
-        mime="text/csv",
-    )
-
-
-# ============================================================
-# 五、学业预警看板
-# ============================================================
-
-def dashboard_page(df, raw_df, model, config, model_source,
-                   high_threshold, medium_threshold):
-    st.header("📊 学业预警看板")
-
-    total = len(df)
-    high_count = int((df["risk_level"] == "高风险").sum())
-    medium_count = int((df["risk_level"] == "中风险").sum())
-    low_count = int((df["risk_level"] == "低风险").sum())
-
-    # 第一行：核心指标
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric("学生总数", f"{total:,}")
-    c2.metric(
-        "高风险人数",
-        f"{high_count:,}",
-        f"{high_count / total * 100:.1f}%" if total else "0%",
-    )
-    c3.metric(
-        "中风险人数",
-        f"{medium_count:,}",
-        f"{medium_count / total * 100:.1f}%" if total else "0%",
-    )
-    c4.metric(
-        "低风险人数",
-        f"{low_count:,}",
-        f"{low_count / total * 100:.1f}%" if total else "0%",
-    )
-
-    st.divider()
-
-    st.subheader("风险等级分布")
-
-    left, right = st.columns([1, 1])
-
-    with left:
-        show_risk_distribution(df)
-
-    with right:
-        risk_summary = pd.DataFrame({
-            "风险等级": ["高风险", "中风险", "低风险"],
-            "学生人数": [high_count, medium_count, low_count],
+        rows.append({
+            "模型": name,
+            "交叉验证AUC均值": round(float(auc_scores.mean()), 4),
+            "测试集准确率": round(
+                accuracy_score(y_test, test_pred), 4
+            ),
+            "测试集精确率": round(
+                precision_score(
+                    y_test, test_pred, zero_division=0
+                ), 4
+            ),
+            "测试集召回率": round(
+                recall_score(
+                    y_test, test_pred, zero_division=0
+                ), 4
+            ),
+            "测试集F1": round(
+                f1_score(
+                    y_test, test_pred, zero_division=0
+                ), 4
+            ),
+            "测试集AUC": round(float(test_auc), 4)
         })
-        risk_summary["占比"] = (
-            risk_summary["学生人数"] / total * 100
-        ).round(2) if total else 0
 
-        st.dataframe(
-            risk_summary,
-            use_container_width=True,
-            hide_index=True,
-        )
+        if float(auc_scores.mean()) > best_cv_auc:
+            best_cv_auc = float(auc_scores.mean())
+            best_name = name
+            best_test_model = estimator
 
-        st.caption(
-            f"当前高风险阈值：{high_threshold:.3f}；"
-            f"中风险阈值：{medium_threshold:.3f}"
-        )
+    metrics_df = pd.DataFrame(rows).sort_values(
+        "交叉验证AUC均值",
+        ascending=False
+    ).reset_index(drop=True)
 
-    # 明确区分真实标签与模型预测
-    st.subheader("原始标签与模型预测对照")
+    best_test_prob = best_test_model.predict_proba(X_test)[:, 1]
+    best_test_pred = (best_test_prob >= 0.5).astype(int)
 
-    original_high = int((raw_df[TARGET] == 1).sum())
-    original_low = int((raw_df[TARGET] == 0).sum())
+    final_model = build_models()[best_name]
+    final_model.fit(X, y)
 
-    label_col1, label_col2, label_col3 = st.columns(3)
-
-    label_col1.metric("原始标签高风险", f"{original_high:,}")
-    label_col2.metric("原始标签非高风险", f"{original_low:,}")
-    label_col3.metric(
-        "模型预测高风险",
-        f"{high_count:,}",
-        help="模型根据特征和风险阈值预测出的高风险人数，不等于原始标签人数。",
+    return (
+        final_model,
+        best_name,
+        metrics_df,
+        X_test,
+        y_test,
+        best_test_prob,
+        best_test_pred,
+        roc_data
     )
 
-    st.info(
-        "说明：原始标签 at_risk=1/0 是数据集的标记；"
-        "高、中、低风险是模型概率按阈值划分的结果。"
-        "两者统计口径不同，不能直接视为同一个指标。"
-    )
 
-    st.divider()
-    st.subheader("📌 风险因素分析")
+def get_importance(model):
+    """提取树模型特征重要性或逻辑回归系数绝对值。"""
 
-    show_feature_importance(model)
+    estimator = model.named_steps["model"]
 
-    # 高风险学生名单
-    st.divider()
-    st.subheader("🚨 高风险学生名单")
-
-    high_df = df[df["risk_level"] == "高风险"].copy()
-
-    if high_df.empty:
-        st.success("当前阈值下没有被识别为高风险的学生。")
+    if hasattr(estimator, "feature_importances_"):
+        values = estimator.feature_importances_
+    elif hasattr(estimator, "coef_"):
+        values = np.abs(estimator.coef_[0])
     else:
-        search_id = st.text_input(
-            "按学号或学生编号搜索",
-            key="dashboard_student_search",
+        values = np.zeros(len(FEATURES))
+
+    return pd.DataFrame({
+        "特征": FEATURES,
+        "特征名称": [FEATURE_LABELS[x] for x in FEATURES],
+        "重要性": values
+    }).sort_values("重要性", ascending=False)
+
+
+def risk_level(prob):
+    if prob >= 0.7:
+        return "高风险"
+    if prob >= 0.4:
+        return "中风险"
+    return "低风险"
+
+
+def recommendations(row, prob):
+    """根据输入特征生成规则性干预建议。"""
+
+    suggestions = []
+
+    if row["attendance"] < 0.8:
+        suggestions.append("加强考勤管理，了解缺勤原因。")
+
+    if row["homework_rate"] < 0.7:
+        suggestions.append("制定作业完成计划，定期检查学习任务。")
+
+    if row["study_hours"] < 2:
+        suggestions.append("帮助学生制定合理的每日学习计划。")
+
+    if row["past_fail"] >= 1:
+        suggestions.append("针对薄弱课程安排答疑或补习。")
+
+    if row["family_support"] == 0:
+        suggestions.append("加强家校沟通，了解学生的支持需求。")
+
+    if not suggestions:
+        suggestions.append("保持现有学习习惯，定期跟踪学习状态。")
+
+    if prob >= 0.7:
+        suggestions.insert(
+            0, "建议教师优先跟进，并进行个别谈话。"
         )
 
-        if search_id.strip():
-            high_df = high_df[
-                high_df["student_id"].astype(str).str.contains(
-                    search_id.strip(), case=False, na=False
-                )
-            ]
-
-        display_cols = [
-            "student_id",
-            "risk_probability_pct",
-            "attendance",
-            "homework_rate",
-            "study_hours",
-            "past_fail",
-            "risk_advice",
-        ]
-
-        display_df = high_df[display_cols].rename(columns={
-            "student_id": "学生编号",
-            "risk_probability_pct": "预测风险概率（%）",
-            "attendance": "出勤率",
-            "homework_rate": "作业完成率",
-            "study_hours": "学习时长",
-            "past_fail": "以往挂科情况",
-            "risk_advice": "辅助建议",
-        })
-
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        make_download_button(
-            display_df,
-            "高风险学生名单.csv",
-            "下载高风险学生名单",
-        )
-
-    with st.expander("查看模型与阈值信息"):
-        st.write("模型状态：", model_source)
-        st.write("当前配置：")
-        st.json(config)
+    return suggestions
 
 
-# ============================================================
-# 六、批量预警
-# ============================================================
+# =========================================================
+# 4. 登录模块
+# =========================================================
 
-def batch_prediction_page(model, high_threshold, medium_threshold):
-    st.header("📁 批量学生预警")
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-    st.write(
-        "上传 CSV 文件，系统将根据六个学生特征预测风险等级。"
-    )
+if not st.session_state.logged_in:
+    st.title("🎓 学生学业成绩预警系统")
+    st.caption("基于机器学习的学生学业风险分析与干预平台")
+    st.markdown("---")
 
-    st.caption(
-        "所需字段：attendance、homework_rate、study_hours、"
-        "past_fail、online_hours、family_support。"
-    )
-
-    uploaded_file = st.file_uploader(
-        "上传学生 CSV 文件",
-        type=["csv"],
-        key="batch_upload",
-    )
-
-    if uploaded_file is None:
-        st.info("请上传文件后开始批量预测。")
-        return
-
-    try:
-        batch_df = pd.read_csv(uploaded_file)
-
-        if len(batch_df.columns) == 1 and "\t" in str(batch_df.columns[0]):
-            uploaded_file.seek(0)
-            batch_df = pd.read_csv(uploaded_file, sep="\t")
-
-        batch_df.columns = batch_df.columns.astype(str).str.strip()
-
-    except Exception as exc:
-        st.error(f"文件读取失败：{exc}")
-        return
-
-    missing = [col for col in FEATURES if col not in batch_df.columns]
-
-    if missing:
-        st.error(f"上传文件缺少以下字段：{', '.join(missing)}")
-        return
-
-    for col in FEATURES:
-        batch_df[col] = pd.to_numeric(
-            batch_df[col], errors="coerce"
-        )
-
-    batch_df[FEATURES] = batch_df[FEATURES].replace(
-        [np.inf, -np.inf], np.nan
-    )
-
-    if "student_id" not in batch_df.columns:
-        batch_df.insert(
-            0,
-            "student_id",
-            [f"BATCH{i + 1:04d}" for i in range(len(batch_df))]
-        )
-
-    try:
-        probabilities = get_positive_probability(
-            model, batch_df[FEATURES]
-        )
-    except Exception as exc:
-        st.error(f"批量预测失败：{exc}")
-        return
-
-    batch_df["risk_probability"] = probabilities
-    batch_df["risk_probability_pct"] = (
-        batch_df["risk_probability"] * 100
-    ).round(2)
-
-    batch_df["risk_level"] = batch_df["risk_probability"].apply(
-        lambda p: classify_risk(
-            p, high_threshold, medium_threshold
-        )
-    )
-
-    batch_df["risk_advice"] = batch_df.apply(
-        lambda row: risk_advice(row, row["risk_level"]),
-        axis=1,
-    )
-
-    high_count = int((batch_df["risk_level"] == "高风险").sum())
-    medium_count = int((batch_df["risk_level"] == "中风险").sum())
-    low_count = int((batch_df["risk_level"] == "低风险").sum())
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("高风险", high_count)
-    c2.metric("中风险", medium_count)
-    c3.metric("低风险", low_count)
-
-    display_df = batch_df.rename(columns={
-        "student_id": "学生编号",
-        "risk_probability_pct": "预测风险概率（%）",
-        "risk_level": "风险等级",
-        "risk_advice": "辅助建议",
-    })
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    make_download_button(
-        display_df,
-        "批量学业预警结果.csv",
-        "下载批量预警结果",
-    )
-
-
-# ============================================================
-# 七、单个学生预警
-# ============================================================
-
-def single_prediction_page(model, df, high_threshold, medium_threshold):
-    st.header("👤 单个学生预警")
-
-    st.write("输入学生的学习情况，查看模型预测结果和辅助建议。")
-
-    student_id = st.text_input(
-        "学生编号（可选）",
-        value="NEW_STUDENT",
-    )
-
-    input_values = {}
-
-    for feature in FEATURES:
-        series = pd.to_numeric(df[feature], errors="coerce").dropna()
-
-        if series.empty:
-            minimum, maximum, median = 0.0, 100.0, 0.0
-        else:
-            minimum = float(series.min())
-            maximum = float(series.max())
-            median = float(series.median())
-
-        if minimum == maximum:
-            maximum = minimum + 1.0
-
-        default = float(np.clip(median, minimum, maximum))
-
-        step = 1.0 if float(minimum).is_integer() and float(maximum).is_integer() else 0.1
-
-        input_values[feature] = st.number_input(
-            FEATURE_NAMES[feature],
-            min_value=float(minimum),
-            max_value=float(maximum),
-            value=default,
-            step=step,
-            key=f"single_{feature}",
-        )
-
-    if st.button("开始预警", type="primary", use_container_width=True):
-        input_df = pd.DataFrame([input_values], columns=FEATURES)
-
-        try:
-            probability = float(
-                get_positive_probability(model, input_df)[0]
-            )
-        except Exception as exc:
-            st.error(f"预测失败：{exc}")
-            return
-
-        level = classify_risk(
-            probability, high_threshold, medium_threshold
-        )
-
-        st.divider()
-        st.subheader(f"学生编号：{student_id or 'NEW_STUDENT'}")
-
-        c1, c2 = st.columns(2)
-        c1.metric("预测风险概率", f"{probability * 100:.2f}%")
-        c2.metric("风险等级", level)
-
-        if level == "高风险":
-            st.error("模型识别为高风险，建议优先进行人工核实和学业支持。")
-        elif level == "中风险":
-            st.warning("模型识别为中风险，建议持续观察并定期复查。")
-        else:
-            st.success("模型识别为低风险，建议维持常规学习支持。")
-
-        advice = risk_advice(input_values, level)
-        st.write("**辅助建议：**")
-        st.write(advice)
-
-        result = pd.DataFrame([{
-            "student_id": student_id or "NEW_STUDENT",
-            **input_values,
-            "risk_probability": probability,
-            "risk_probability_pct": round(probability * 100, 2),
-            "risk_level": level,
-            "risk_advice": advice,
-            "prediction_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }])
-
-        make_download_button(
-            result,
-            "单个学生预警结果.csv",
-            "下载该学生的预警结果",
-        )
-
-
-# ============================================================
-# 八、干预记录
-# ============================================================
-
-def load_intervention_records():
-    if not os.path.exists(INTERVENTION_PATH):
-        return pd.DataFrame(columns=[
-            "student_id",
-            "risk_level",
-            "intervention",
-            "responsible_person",
-            "follow_up_date",
-            "status",
-            "created_at",
-        ])
-
-    try:
-        records = pd.read_csv(INTERVENTION_PATH)
-        return records
-    except Exception:
-        return pd.DataFrame(columns=[
-            "student_id",
-            "risk_level",
-            "intervention",
-            "responsible_person",
-            "follow_up_date",
-            "status",
-            "created_at",
-        ])
-
-
-def intervention_page(df):
-    st.header("📝 干预记录管理")
-
-    st.write("记录学生学业帮扶措施、负责人和后续跟进情况。")
-
-    with st.form("intervention_form"):
-        student_id = st.text_input("学生编号")
-        risk_level = st.selectbox(
-            "风险等级",
-            ["高风险", "中风险", "低风险"],
-        )
-        intervention = st.text_area(
-            "干预措施",
-            placeholder="例如：联系学生了解情况、安排课程辅导、制定学习计划……",
-        )
-        responsible_person = st.text_input("负责人")
-        follow_up_date = st.date_input("计划复查日期")
-        status = st.selectbox(
-            "处理状态",
-            ["待跟进", "跟进中", "已完成"],
-        )
-
+    with st.form("login_form"):
+        username = st.text_input("用户名")
+        password = st.text_input("密码", type="password")
         submitted = st.form_submit_button(
-            "保存干预记录",
-            type="primary",
+            "登录",
+            use_container_width=True
         )
 
     if submitted:
-        if not student_id.strip():
-            st.error("请填写学生编号。")
-        elif not intervention.strip():
-            st.error("请填写干预措施。")
+        if username == "admin" and password == "123456":
+            st.session_state.logged_in = True
+            st.rerun()
         else:
-            records = load_intervention_records()
+            st.error("用户名或密码错误。演示账号：admin，密码：123456")
 
-            new_record = pd.DataFrame([{
-                "student_id": student_id.strip(),
-                "risk_level": risk_level,
-                "intervention": intervention.strip(),
-                "responsible_person": responsible_person.strip(),
-                "follow_up_date": str(follow_up_date),
-                "status": status,
-                "created_at": datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-            }])
+    st.stop()
 
-            records = pd.concat(
-                [records, new_record],
-                ignore_index=True,
+
+# =========================================================
+# 5. 导航与系统初始化
+# =========================================================
+
+st.sidebar.title("🎓 学业预警系统")
+st.sidebar.caption("基于机器学习的风险分析平台")
+
+page = st.sidebar.radio(
+    "功能导航",
+    [
+        "学业预警看板",
+        "批量预警",
+        "单个学生预警",
+        "干预记录",
+        "实验报告"
+    ]
+)
+
+if st.sidebar.button("退出登录"):
+    st.session_state.logged_in = False
+    st.rerun()
+
+try:
+    df = load_data()
+
+    (
+        model,
+        best_name,
+        metrics_df,
+        X_test,
+        y_test,
+        best_test_prob,
+        best_test_pred,
+        roc_data
+    ) = train_model(df)
+
+except Exception as e:
+    st.error("系统初始化失败，请检查学生数据和模型训练条件。")
+    st.exception(e)
+    st.stop()
+
+st.sidebar.success(f"当前最优模型：{best_name}")
+st.sidebar.caption(f"当前数据量：{len(df)} 条")
+
+
+# =========================================================
+# 6. 学业预警看板
+# =========================================================
+
+if page == "学业预警看板":
+
+    st.title("📊 学业预警看板")
+    st.caption("学生风险概览、风险分布与主要影响因素")
+
+    probs = model.predict_proba(df[FEATURES])[:, 1]
+
+    dashboard = df.copy()
+    dashboard["风险概率"] = probs
+    dashboard["风险等级"] = [
+        risk_level(p) for p in probs
+    ]
+
+    high_count = int(
+        (dashboard["风险等级"] == "高风险").sum()
+    )
+    medium_count = int(
+        (dashboard["风险等级"] == "中风险").sum()
+    )
+    low_count = int(
+        (dashboard["风险等级"] == "低风险").sum()
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric("学生总数", len(dashboard))
+    c2.metric("高风险人数", high_count)
+    c3.metric("中风险人数", medium_count)
+    c4.metric("低风险人数", low_count)
+
+    st.divider()
+
+    left, right = st.columns([1, 1.25])
+
+    with left:
+        st.subheader("风险等级分布")
+
+        risk_counts = pd.Series({
+            "高风险": high_count,
+            "中风险": medium_count,
+            "低风险": low_count
+        })
+
+        fig, ax = plt.subplots(figsize=(6, 4.5))
+
+        colors = [
+            RISK_COLORS["高风险"],
+            RISK_COLORS["中风险"],
+            RISK_COLORS["低风险"]
+        ]
+
+        if risk_counts.sum() > 0:
+            wedges, _, autotexts = ax.pie(
+                risk_counts.values,
+                labels=None,
+                autopct="%1.1f%%",
+                startangle=90,
+                counterclock=False,
+                colors=colors,
+                pctdistance=0.78,
+                wedgeprops={
+                    "width": 0.38,
+                    "edgecolor": "white"
+                }
             )
 
-            records.to_csv(
-                INTERVENTION_PATH,
+            for autotext in autotexts:
+                autotext.set_fontsize(10)
+                autotext.set_color("#222222")
+
+            ax.legend(
+                wedges,
+                [
+                    f"{name}：{count}人"
+                    for name, count in risk_counts.items()
+                ],
+                title="风险等级",
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.15),
+                ncol=1,
+                frameon=False
+            )
+
+            ax.set_title("学生学业风险占比")
+            ax.axis("equal")
+
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    with right:
+        st.subheader("各风险等级人数")
+
+        risk_bar = risk_counts.sort_values()
+
+        fig, ax = plt.subplots(figsize=(6, 4.5))
+
+        bars = ax.barh(
+            risk_bar.index,
+            risk_bar.values,
+            color=[
+                RISK_COLORS.get(x, "#4C78A8")
+                for x in risk_bar.index
+            ]
+        )
+
+        ax.set_xlabel("学生人数")
+        ax.set_title("不同风险等级学生人数")
+        ax.grid(axis="x", linestyle="--", alpha=0.25)
+        ax.set_axisbelow(True)
+
+        for bar in bars:
+            ax.text(
+                bar.get_width(),
+                bar.get_y() + bar.get_height() / 2,
+                f" {int(bar.get_width())}",
+                va="center"
+            )
+
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    st.divider()
+
+    st.subheader("主要影响因素")
+
+    importance = get_importance(model).sort_values("重要性")
+
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+
+    bars = ax.barh(
+        importance["特征名称"],
+        importance["重要性"],
+        color="#4C78A8"
+    )
+
+    ax.set_title("模型特征重要性")
+    ax.set_xlabel("相对重要性")
+    ax.set_ylabel("学生特征")
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+    ax.set_axisbelow(True)
+
+    for bar in bars:
+        value = bar.get_width()
+        ax.text(
+            value,
+            bar.get_y() + bar.get_height() / 2,
+            f" {value:.3f}",
+            va="center",
+            fontsize=9
+        )
+
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.divider()
+
+    st.subheader("学生风险明细")
+
+    search = st.text_input("按学生编号搜索")
+
+    level_filter = st.multiselect(
+        "风险等级筛选",
+        ["高风险", "中风险", "低风险"],
+        default=["高风险", "中风险", "低风险"]
+    )
+
+    shown = dashboard[
+        dashboard["风险等级"].isin(level_filter)
+    ].copy()
+
+    if search.strip():
+        shown = shown[
+            shown["student_id"].astype(str).str.contains(
+                search.strip(),
+                case=False,
+                na=False
+            )
+        ]
+
+    shown = shown.sort_values("风险概率", ascending=False)
+
+    st.dataframe(
+        shown,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.download_button(
+        "下载看板数据 CSV",
+        dashboard.to_csv(index=False).encode("utf-8-sig"),
+        file_name="学业预警看板.csv",
+        mime="text/csv"
+    )
+# =========================================================
+# 7. 批量预警
+# =========================================================
+
+elif page == "批量预警":
+
+    st.title("📁 批量学生预警")
+    st.write("上传包含学生特征的 CSV 文件，系统将批量计算风险概率。")
+
+    st.info(
+        "上传文件至少需要包含以下六个特征字段："
+        + "、".join(FEATURES)
+    )
+
+    template = pd.DataFrame(
+        columns=["student_id"] + FEATURES
+    )
+
+    st.download_button(
+        "下载批量预测模板",
+        template.to_csv(index=False).encode("utf-8-sig"),
+        file_name="批量预测模板.csv",
+        mime="text/csv"
+    )
+
+    uploaded = st.file_uploader(
+        "上传学生数据 CSV",
+        type=["csv", "txt"]
+    )
+
+    if uploaded is not None:
+
+        try:
+            batch = read_csv_robust(uploaded)
+
+            missing = [
+                col for col in FEATURES
+                if col not in batch.columns
+            ]
+
+            if missing:
+                st.error(
+                    f"上传文件缺少特征字段：{missing}。"
+                    f"实际读取到的字段：{batch.columns.tolist()}"
+                )
+
+            else:
+                for col in FEATURES:
+                    batch[col] = pd.to_numeric(
+                        batch[col],
+                        errors="coerce"
+                    )
+
+                invalid = batch[FEATURES].isna().any(axis=1)
+
+                if invalid.any():
+                    st.warning(
+                        f"有 {int(invalid.sum())} 行存在缺失或非数值特征，"
+                        "模型将通过中位数填补缺失值。"
+                    )
+
+                probs = model.predict_proba(
+                    batch[FEATURES]
+                )[:, 1]
+
+                batch["风险概率"] = np.round(probs, 4)
+                batch["风险等级"] = [
+                    risk_level(p) for p in probs
+                ]
+
+                st.subheader("批量预警结果")
+
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric(
+                    "高风险人数",
+                    int((batch["风险等级"] == "高风险").sum())
+                )
+
+                c2.metric(
+                    "中风险人数",
+                    int((batch["风险等级"] == "中风险").sum())
+                )
+
+                c3.metric(
+                    "低风险人数",
+                    int((batch["风险等级"] == "低风险").sum())
+                )
+
+                st.dataframe(
+                    batch,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.download_button(
+                    "下载批量预警结果",
+                    batch.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="批量预警结果.csv",
+                    mime="text/csv"
+                )
+
+        except Exception as e:
+            st.error(f"文件处理失败：{e}")
+
+
+# =========================================================
+# 8. 单个学生预警
+# =========================================================
+
+elif page == "单个学生预警":
+
+    st.title("👤 单个学生风险预测")
+    st.write("输入学生的学习情况，查看模型预测结果及干预建议。")
+
+    with st.form("student_form"):
+
+        student_id = st.text_input(
+            "学生编号",
+            value="NEW001"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            attendance = st.slider(
+                "出勤率",
+                0.0, 1.0, 0.85, 0.01
+            )
+
+            homework_rate = st.slider(
+                "作业完成率",
+                0.0, 1.0, 0.80, 0.01
+            )
+
+            study_hours = st.number_input(
+                "每日学习时长（小时）",
+                min_value=0.0,
+                max_value=24.0,
+                value=3.0,
+                step=0.5
+            )
+
+        with col2:
+            past_fail = st.number_input(
+                "以往挂科门数",
+                min_value=0,
+                max_value=30,
+                value=0,
+                step=1
+            )
+
+            online_hours = st.number_input(
+                "每日在线学习时长（小时）",
+                min_value=0.0,
+                max_value=24.0,
+                value=2.0,
+                step=0.5
+            )
+
+            family_support = st.selectbox(
+                "家庭支持情况",
+                [1, 0],
+                format_func=lambda x: (
+                    "支持" if x == 1 else "支持不足"
+                )
+            )
+
+        submitted = st.form_submit_button(
+            "开始预测",
+            use_container_width=True
+        )
+
+    if submitted:
+
+        one = pd.DataFrame([{
+            "attendance": attendance,
+            "homework_rate": homework_rate,
+            "study_hours": study_hours,
+            "past_fail": past_fail,
+            "online_hours": online_hours,
+            "family_support": family_support
+        }])[FEATURES]
+
+        prob = float(
+            model.predict_proba(one)[0, 1]
+        )
+
+        level = risk_level(prob)
+
+        st.divider()
+        st.subheader("预测结果")
+
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "风险概率",
+            f"{prob:.1%}"
+        )
+
+        c2.metric(
+            "风险等级",
+            level
+        )
+
+        st.progress(
+            float(np.clip(prob, 0, 1))
+        )
+
+        st.caption(
+            "风险概率来自当前训练模型，不代表学生必然发生学业风险。"
+        )
+
+        st.subheader("学生特征分析")
+
+        radar_names = [
+            "出勤率",
+            "作业完成率",
+            "学习时长",
+            "历史挂科",
+            "在线学习",
+            "家庭支持"
+        ]
+
+        max_study = max(
+            float(df["study_hours"].max()), 1.0
+        )
+
+        max_online = max(
+            float(df["online_hours"].max()), 1.0
+        )
+
+        max_fail = max(
+            float(df["past_fail"].max()), 1.0
+        )
+
+        radar_values = [
+            attendance,
+            homework_rate,
+            min(study_hours / max_study, 1.0),
+            min(past_fail / max_fail, 1.0),
+            min(online_hours / max_online, 1.0),
+            family_support
+        ]
+
+        angles = np.linspace(
+            0, 2 * np.pi, len(radar_names),
+            endpoint=False
+        ).tolist()
+
+        values_closed = radar_values + radar_values[:1]
+        angles_closed = angles + angles[:1]
+
+        fig, ax = plt.subplots(
+            figsize=(6, 5),
+            subplot_kw={"polar": True}
+        )
+
+        ax.plot(
+            angles_closed,
+            values_closed,
+            linewidth=2,
+            color="#4C78A8"
+        )
+
+        ax.fill(
+            angles_closed,
+            values_closed,
+            color="#4C78A8",
+            alpha=0.2
+        )
+
+        ax.set_xticks(angles)
+        ax.set_xticklabels(radar_names)
+        ax.set_ylim(0, 1)
+        ax.set_title("学生特征相对水平")
+
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.subheader("个性化干预建议")
+
+        for suggestion in recommendations(
+            one.iloc[0],
+            prob
+        ):
+            st.write(f"- {suggestion}")
+
+        result = one.copy()
+        result.insert(0, "student_id", student_id)
+        result["风险概率"] = round(prob, 4)
+        result["风险等级"] = level
+
+        st.download_button(
+            "下载本次预测结果",
+            result.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"{student_id}_预警结果.csv",
+            mime="text/csv"
+        )
+
+
+# =========================================================
+# 9. 干预记录
+# =========================================================
+
+elif page == "干预记录":
+
+    st.title("📝 学生干预记录")
+    st.caption("记录教师干预措施、处理内容和后续跟进情况。")
+
+    with st.form("record_form", clear_on_submit=True):
+
+        rid = st.text_input("学生编号")
+        teacher = st.text_input("负责教师")
+
+        method = st.selectbox(
+            "干预方式",
+            [
+                "个别谈话",
+                "课程辅导",
+                "家校沟通",
+                "学习计划",
+                "其他"
+            ]
+        )
+
+        content = st.text_area("干预内容")
+        followup = st.text_area("后续跟进情况")
+
+        saved = st.form_submit_button("保存记录")
+
+    if saved:
+
+        if not rid.strip() or not content.strip():
+            st.warning("请填写学生编号和干预内容。")
+
+        else:
+
+            os.makedirs(
+                os.path.dirname(RECORD_PATH),
+                exist_ok=True
+            )
+
+            record = pd.DataFrame([{
+                "学生编号": rid.strip(),
+                "负责教师": teacher.strip(),
+                "干预方式": method,
+                "干预内容": content.strip(),
+                "后续跟进": followup.strip(),
+                "记录时间": pd.Timestamp.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            }])
+
+            if os.path.exists(RECORD_PATH):
+
+                try:
+                    old = read_csv_robust(RECORD_PATH)
+
+                    record = pd.concat(
+                        [old, record],
+                        ignore_index=True
+                    )
+
+                except Exception as e:
+                    st.error(f"原干预记录文件无法读取：{e}")
+                    st.stop()
+
+            record.to_csv(
+                RECORD_PATH,
                 index=False,
-                encoding="utf-8-sig",
+                encoding="utf-8-sig"
             )
 
             st.success("干预记录已保存。")
-            st.rerun()
 
     st.divider()
     st.subheader("历史干预记录")
 
-    records = load_intervention_records()
+    if os.path.exists(RECORD_PATH):
 
-    if records.empty:
-        st.info("目前还没有干预记录。")
-        return
+        try:
+            records = read_csv_robust(RECORD_PATH)
 
-    if "status" in records.columns:
-        status_filter = st.multiselect(
-            "按处理状态筛选",
-            options=sorted(records["status"].dropna().unique().tolist()),
-            default=sorted(records["status"].dropna().unique().tolist()),
-        )
+            st.dataframe(
+                records,
+                use_container_width=True,
+                hide_index=True
+            )
 
-        records = records[records["status"].isin(status_filter)]
+            st.download_button(
+                "下载干预记录",
+                records.to_csv(index=False).encode("utf-8-sig"),
+                file_name="干预记录.csv",
+                mime="text/csv"
+            )
+
+        except Exception as e:
+            st.error(f"读取干预记录失败：{e}")
+
+    else:
+        st.info("暂时没有干预记录。")
+
+    st.warning(
+        "提示：Streamlit Cloud 的运行环境可能重启，"
+        "本地文件写入不保证永久保存。正式使用建议连接数据库。"
+    )
+
+
+# =========================================================
+# 10. 实验报告与模型分析
+# =========================================================
+
+elif page == "实验报告":
+
+    st.title("🧪 模型评估与实验报告")
+
+    st.markdown(
+        """
+        本模块比较逻辑回归、决策树和随机森林三种分类模型。
+        使用分层训练集与测试集划分，并通过训练集交叉验证
+        的 AUC 均值选择模型。测试集用于独立性能评估。
+        """
+    )
+
+    # 一、模型性能指标
+    st.subheader("一、模型性能对比")
 
     st.dataframe(
-        records,
+        metrics_df,
         use_container_width=True,
-        hide_index=True,
+        hide_index=True
     )
 
-    make_download_button(
-        records,
-        "学生干预记录.csv",
-        "下载干预记录",
-    )
+    # 二、模型指标分组柱状图
+    st.subheader("二、各模型分类指标对比")
 
-
-# ============================================================
-# 九、实验报告
-# ============================================================
-
-def experiment_page():
-    st.header("🧪 模型实验报告")
-
-    st.write(
-        "此页面展示独立实验脚本生成的模型指标、特征重要性和 SHAP 图表。"
-    )
-
-    metrics_path = os.path.join(
-        OUTPUT_DIR, "final_model_metrics.csv"
-    )
-    importance_path = os.path.join(
-        OUTPUT_DIR, "final_feature_importance.csv"
-    )
-
-    if os.path.exists(metrics_path):
-        st.subheader("模型评价指标")
-        try:
-            metrics = pd.read_csv(metrics_path)
-            st.dataframe(
-                metrics,
-                use_container_width=True,
-                hide_index=True,
-            )
-        except Exception as exc:
-            st.warning(f"无法读取模型指标：{exc}")
-    else:
-        st.info(
-            "未找到 output/final_model_metrics.csv。"
-            "请先运行实验脚本生成实验结果。"
-        )
-
-    if os.path.exists(importance_path):
-        st.subheader("特征重要性")
-        try:
-            importance = pd.read_csv(importance_path)
-            st.dataframe(
-                importance,
-                use_container_width=True,
-                hide_index=True,
-            )
-        except Exception as exc:
-            st.warning(f"无法读取特征重要性：{exc}")
-
-    image_files = [
-        ("决策树深度实验", "exp1_tree_depth.png"),
-        ("决策树召回率与 F1 实验", "exp1_tree_recall_f1.png"),
-        ("随机森林树数量实验", "exp2_rf_estimators.png"),
-        ("随机森林召回率与 F1 实验", "exp2_rf_recall_f1.png"),
-        ("SHAP 特征影响分析", "shap_summary.png"),
-        ("SHAP 特征重要性", "shap_feature_importance.png"),
-        ("SHAP 单个学生解释", "shap_waterfall.png"),
-        ("最终模型特征重要性", "final_feature_importance.png"),
+    chart_df = metrics_df.set_index("模型")[
+        [
+            "测试集准确率",
+            "测试集精确率",
+            "测试集召回率",
+            "测试集F1"
+        ]
     ]
 
-    st.subheader("实验图表")
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    found_image = False
+    x = np.arange(len(chart_df.index))
+    metric_names = chart_df.columns.tolist()
+    width = 0.18
 
-    for title, filename in image_files:
-        image_path = os.path.join(OUTPUT_DIR, filename)
-
-        if os.path.exists(image_path):
-            found_image = True
-            with st.expander(title, expanded=False):
-                st.image(
-                    image_path,
-                    caption=filename,
-                    use_container_width=True,
-                )
-
-    if not found_image:
-        st.info(
-            "output 文件夹中暂时没有实验图表。"
-            "请运行 experiment.py 后再查看。"
+    for i, metric in enumerate(metric_names):
+        ax.bar(
+            x + (i - (len(metric_names) - 1) / 2) * width,
+            chart_df[metric].values,
+            width,
+            label=metric
         )
 
-    if os.path.isdir(OUTPUT_DIR):
-        st.subheader("实验结果文件下载")
+    ax.set_xticks(x)
+    ax.set_xticklabels(chart_df.index)
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("指标值")
+    ax.set_title("不同模型的测试集分类指标")
+    ax.legend(ncol=2)
+    ax.grid(axis="y", linestyle="--", alpha=0.25)
+    ax.set_axisbelow(True)
 
-        for filename in sorted(os.listdir(OUTPUT_DIR)):
-            path = os.path.join(OUTPUT_DIR, filename)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
-            if os.path.isfile(path) and filename.lower().endswith(".csv"):
-                try:
-                    with open(path, "rb") as file:
-                        st.download_button(
-                            label=f"下载 {filename}",
-                            data=file.read(),
-                            file_name=filename,
-                            mime="text/csv",
-                            key=f"download_{filename}",
-                        )
-                except OSError:
-                    pass
-
+    # 三、ROC 曲线
+    st.subheader("三、ROC 曲线对比")
     st.caption(
-        "研究限制：如果数据由程序模拟生成，实验指标只能反映当前数据与标签规则下的效果，"
-        "不能直接证明模型在真实高校学生数据上的泛化能力。"
+        "ROC 曲线反映模型在不同分类阈值下的区分能力；"
+        "曲线越靠近左上角，通常表示区分能力越好。"
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    for name, values in roc_data.items():
+        ax.plot(
+            values["fpr"],
+            values["tpr"],
+            linewidth=2,
+            label=f"{name}（AUC={values['auc']:.3f}）"
+        )
+
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        linestyle="--",
+        color="gray",
+        label="随机分类参考线"
+    )
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("假阳性率（FPR）")
+    ax.set_ylabel("真正率（TPR）")
+    ax.set_title("三种机器学习模型 ROC 曲线")
+    ax.legend(loc="lower right")
+    ax.grid(alpha=0.25)
+
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    # 四、最优模型混淆矩阵
+    st.subheader("四、最优模型混淆矩阵")
+    st.caption(
+        f"当前根据交叉验证 AUC 选择的模型为：{best_name}。"
+        "以下混淆矩阵来自该模型在独立测试集上的预测。"
+    )
+
+    cm = confusion_matrix(
+        y_test,
+        best_test_pred,
+        labels=[0, 1]
+    )
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    image = ax.imshow(
+        cm,
+        cmap="Blues"
+    )
+
+    ax.set_xticks([0, 1])
+    ax.set_yticks([0, 1])
+
+    ax.set_xticklabels([
+        "预测无风险",
+        "预测有风险"
+    ])
+
+    ax.set_yticklabels([
+        "实际无风险",
+        "实际有风险"
+    ])
+
+    ax.set_xlabel("模型预测结果")
+    ax.set_ylabel("真实标签")
+    ax.set_title("测试集分类结果")
+
+    threshold = cm.max() / 2 if cm.max() > 0 else 0
+
+    for i in range(2):
+        for j in range(2):
+            ax.text(
+                j,
+                i,
+                str(cm[i, j]),
+                ha="center",
+                va="center",
+                color=(
+                    "white"
+                    if cm[i, j] > threshold
+                    else "#222222"
+                ),
+                fontsize=14,
+                fontweight="bold"
+            )
+
+    fig.colorbar(
+        image,
+        ax=ax,
+        shrink=0.8,
+        label="学生人数"
+    )
+
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    # 五、分类报告
+    st.subheader("五、最优模型分类评估报告")
+
+    report = classification_report(
+        y_test,
+        best_test_pred,
+        labels=[0, 1],
+        target_names=["无风险", "有风险"],
+        output_dict=True,
+        zero_division=0
+    )
+
+    report_df = pd.DataFrame(report).T
+
+    st.dataframe(
+        report_df.round(4),
+        use_container_width=True
+    )
+
+    # 六、特征重要性
+    st.subheader("六、特征重要性分析")
+
+    importance = get_importance(model).sort_values("重要性")
+
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+
+    bars = ax.barh(
+        importance["特征名称"],
+        importance["重要性"],
+        color="#4C78A8"
+    )
+
+    ax.set_xlabel("相对重要性")
+    ax.set_title(f"{best_name} 的特征重要性")
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+    ax.set_axisbelow(True)
+
+    for bar in bars:
+        value = bar.get_width()
+        ax.text(
+            value,
+            bar.get_y() + bar.get_height() / 2,
+            f" {value:.3f}",
+            va="center",
+            fontsize=9
+        )
+
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.info(
+        "说明：树模型的特征重要性与逻辑回归系数绝对值的含义不同，"
+        "这里用于辅助理解模型，不应直接解释为因果关系。"
+    )
+
+    # 七、导出实验结果
+    st.subheader("七、实验数据导出")
+
+    st.download_button(
+        "下载模型性能对比 CSV",
+        metrics_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="模型性能对比.csv",
+        mime="text/csv"
+    )
+
+    st.download_button(
+        "下载分类评估报告 CSV",
+        report_df.to_csv().encode("utf-8-sig"),
+        file_name="分类评估报告.csv",
+        mime="text/csv"
     )
 
 
-# ============================================================
-# 十、主程序
-# ============================================================
+# =========================================================
+# 11. 页面底部
+# =========================================================
 
-def main():
-    show_header()
-
-    # 加载数据
-    raw_df = load_student_data()
-
-    # 加载模型
-    try:
-        model, config, model_source = load_model_and_config(
-            DATA_PATH,
-            MODEL_PATH,
-            CONFIG_PATH,
-        )
-    except Exception as exc:
-        st.error(f"模型初始化失败：{exc}")
-        st.info(
-            "请检查 data/students.csv 的字段和标签，"
-            "或运行正式训练脚本生成模型文件。"
-        )
-        st.stop()
-
-    high_threshold, medium_threshold = get_risk_thresholds(config)
-
-    # 预测当前数据
-    try:
-        signature = (
-            f"{len(raw_df)}_"
-            f"{os.path.getmtime(DATA_PATH) if os.path.exists(DATA_PATH) else 0}_"
-            f"{model_source}"
-        )
-
-        probabilities = get_model_predictions(
-            signature,
-            model,
-            raw_df,
-        )
-
-        df = prepare_data(
-            raw_df,
-            probabilities,
-            high_threshold,
-            medium_threshold,
-        )
-
-    except Exception as exc:
-        st.error(f"生成学生风险预测失败：{exc}")
-        st.stop()
-
-    with st.sidebar:
-        st.title("📚 功能导航")
-
-        page = st.radio(
-            "选择功能",
-            [
-                "学业预警看板",
-                "批量学生预警",
-                "单个学生预警",
-                "干预记录管理",
-                "实验报告",
-            ],
-        )
-
-        st.divider()
-
-        st.caption("当前数据")
-        st.write(f"学生记录：{len(df)} 条")
-
-        st.caption("模型状态")
-        st.write(model_source)
-
-        st.caption("风险阈值")
-        st.write(f"高风险：≥ {high_threshold:.3f}")
-        st.write(f"中风险：≥ {medium_threshold:.3f}")
-
-        if "备用模型" in model_source:
-            st.warning(
-                "当前使用备用模型。建议运行正式训练脚本，"
-                "确保网页使用最终评估并保存的模型。"
-            )
-
-    if page == "学业预警看板":
-        dashboard_page(
-            df,
-            raw_df,
-            model,
-            config,
-            model_source,
-            high_threshold,
-            medium_threshold,
-        )
-
-    elif page == "批量学生预警":
-        batch_prediction_page(
-            model,
-            high_threshold,
-            medium_threshold,
-        )
-
-    elif page == "单个学生预警":
-        single_prediction_page(
-            model,
-            df,
-            high_threshold,
-            medium_threshold,
-        )
-
-    elif page == "干预记录管理":
-        intervention_page(df)
-
-    elif page == "实验报告":
-        experiment_page()
-
-
-if __name__ == "__main__":
-    main()
+st.sidebar.divider()
+st.sidebar.caption("学生学业成绩预警系统")
+st.sidebar.caption("毕业设计演示版本")
