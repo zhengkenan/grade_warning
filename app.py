@@ -1388,6 +1388,237 @@ elif page == "实验报告":
         file_name="分类评估报告.csv",
         mime="text/csv"
     )
+        # ========================================================
+    # 新增：参数实验结果与 SHAP 可解释性分析
+    # ========================================================
+
+    st.divider()
+    st.header("六、模型参数实验")
+
+    st.markdown(
+        """
+        本部分通过交叉验证比较不同决策树深度和随机森林树数量的表现。
+        主要观察 AUC、召回率与 F1 指标的变化，为模型参数选择提供依据。
+        """
+    )
+
+    experiment_images = [
+        (
+            "exp1_tree_depth.png",
+            "决策树深度实验",
+            "比较不同最大深度下模型的交叉验证 AUC。"
+        ),
+        (
+            "exp1_tree_recall_f1.png",
+            "决策树召回率与 F1",
+            "观察决策树深度变化对召回率和 F1 的影响。"
+        ),
+        (
+            "exp2_rf_estimators.png",
+            "随机森林树数量实验",
+            "比较不同决策树数量下随机森林的交叉验证 AUC。"
+        ),
+        (
+            "exp2_rf_recall_f1.png",
+            "随机森林召回率与 F1",
+            "观察随机森林树数量变化对召回率和 F1 的影响。"
+        )
+    ]
+
+    for i in range(0, len(experiment_images), 2):
+        col1, col2 = st.columns(2)
+
+        for col, item in zip(
+            [col1, col2],
+            experiment_images[i:i + 2]
+        ):
+            filename, title, description = item
+            image_path = os.path.join(
+                BASE_DIR,
+                "output",
+                filename
+            )
+
+            with col:
+                st.subheader(title)
+                st.caption(description)
+
+                if os.path.exists(image_path):
+                    st.image(
+                        image_path,
+                        use_container_width=True
+                    )
+                else:
+                    st.info(
+                        f"尚未生成 {filename}。"
+                        "请先运行 experiment.py。"
+                    )
+
+    # 展示参数实验的数值结果
+    st.subheader("参数实验数值结果")
+
+    experiment_tables = [
+        (
+            "决策树深度实验数据",
+            "exp1_tree_depth_results.csv"
+        ),
+        (
+            "随机森林树数量实验数据",
+            "exp2_rf_estimators_results.csv"
+        )
+    ]
+
+    for title, filename in experiment_tables:
+        csv_path = os.path.join(
+            BASE_DIR,
+            "output",
+            filename
+        )
+
+        with st.expander(title):
+            if os.path.exists(csv_path):
+                try:
+                    result_df = pd.read_csv(csv_path)
+                    st.dataframe(
+                        result_df.round(4),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    st.download_button(
+                        label=f"下载{title}",
+                        data=result_df.to_csv(
+                            index=False
+                        ).encode("utf-8-sig"),
+                        file_name=filename,
+                        mime="text/csv",
+                        key=f"download_{filename}"
+                    )
+                except Exception as e:
+                    st.error(f"读取实验结果失败：{e}")
+            else:
+                st.info(
+                    "尚未找到实验结果文件，请先运行 experiment.py。"
+                )
+
+    # ========================================================
+    # 新增：SHAP 可解释性分析
+    # ========================================================
+
+    st.divider()
+    st.header("七、SHAP 模型可解释性分析")
+
+    st.markdown(
+        """
+        SHAP 用于分析不同学生特征对模型输出的影响。
+
+        - **全局影响分析：** 观察各项特征在整体样本中的影响分布。
+        - **特征重要性：** 根据平均绝对 SHAP 值比较特征影响程度。
+        - **单个学生解释：** 分析某个学生的特征如何推动模型输出上升或下降。
+
+        SHAP 图反映的是模型学到的关联和预测贡献，
+        不应直接解释为这些因素与学业风险之间存在因果关系。
+        """
+    )
+
+    shap_images = [
+        (
+            "shap_summary.png",
+            "SHAP 全局特征影响分析"
+        ),
+        (
+            "shap_feature_importance.png",
+            "SHAP 特征重要性"
+        ),
+        (
+            "shap_waterfall.png",
+            "单个学生风险解释"
+        ),
+        (
+            "final_feature_importance.png",
+            "最终随机森林特征重要性"
+        )
+    ]
+
+    for i in range(0, len(shap_images), 2):
+        col1, col2 = st.columns(2)
+
+        for col, item in zip(
+            [col1, col2],
+            shap_images[i:i + 2]
+        ):
+            filename, title = item
+            image_path = os.path.join(
+                BASE_DIR,
+                "output",
+                filename
+            )
+
+            with col:
+                st.subheader(title)
+
+                if os.path.exists(image_path):
+                    st.image(
+                        image_path,
+                        use_container_width=True
+                    )
+                else:
+                    st.info(
+                        f"尚未生成 {filename}。"
+                        "请先运行 experiment.py。"
+                    )
+
+    # 展示最终模型指标与特征重要性 CSV
+    st.subheader("最终模型实验数据")
+
+    final_files = [
+        (
+            "最终随机森林测试集指标",
+            "final_model_metrics.csv"
+        ),
+        (
+            "最终模型特征重要性",
+            "final_feature_importance.csv"
+        ),
+        (
+            "单个学生 SHAP 贡献明细",
+            "shap_single_student_details.csv"
+        )
+    ]
+
+    for title, filename in final_files:
+        csv_path = os.path.join(
+            BASE_DIR,
+            "output",
+            filename
+        )
+
+        with st.expander(title):
+            if os.path.exists(csv_path):
+                try:
+                    result_df = pd.read_csv(csv_path)
+
+                    st.dataframe(
+                        result_df.round(4),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    st.download_button(
+                        label=f"下载{title}",
+                        data=result_df.to_csv(
+                            index=False
+                        ).encode("utf-8-sig"),
+                        file_name=filename,
+                        mime="text/csv",
+                        key=f"download_final_{filename}"
+                    )
+                except Exception as e:
+                    st.error(f"读取文件失败：{e}")
+            else:
+                st.info(
+                    "暂时没有该文件，请先运行 experiment.py。"
+                )
 
 
 # =========================================================
