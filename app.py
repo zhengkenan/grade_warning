@@ -1620,6 +1620,58 @@ elif page == "实验报告":
                     "暂时没有该文件，请先运行 experiment.py。"
                 )
 
+# =========================================================
+# 运行 experiment.py
+# =========================================================
+st.divider()
+st.subheader("运行独立实验脚本")
+st.write("点击按钮后，执行项目根目录下的 experiment.py。")
+
+if st.button("▶ 运行 experiment.py", key="run_experiment_py"):
+    experiment_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "experiment.py"
+    )
+
+    if not os.path.isfile(experiment_path):
+        st.error("找不到 experiment.py，请确认它已上传到 GitHub 仓库根目录。")
+    else:
+        with st.spinner("正在运行 experiment.py，请稍候……"):
+            try:
+                result = subprocess.run(
+                    [sys.executable, experiment_path],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+
+                if result.returncode == 0:
+                    st.success("experiment.py 执行完成！")
+                else:
+                    st.error(
+                        f"experiment.py 执行失败，退出代码：{result.returncode}"
+                    )
+
+                if result.stdout.strip():
+                    st.text_area(
+                        "运行输出",
+                        result.stdout[-12000:],
+                        height=250
+                    )
+
+                if result.stderr.strip():
+                    st.text_area(
+                        "错误信息",
+                        result.stderr[-12000:],
+                        height=200
+                    )
+
+            except subprocess.TimeoutExpired:
+                st.error("运行超过 10 分钟，已停止。")
+
+            except Exception as exc:
+                st.error(f"执行 experiment.py 时发生错误：{exc}")
 
 # =========================================================
 # 11. 页面底部
