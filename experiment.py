@@ -15,6 +15,18 @@ import warnings
 import numpy as np
 import pandas as pd
 import matplotlib
+import matplotlib.pyplot as plt
+
+# 设置中文字体，适配 Streamlit Cloud 的 Linux 环境
+plt.rcParams["font.sans-serif"] = [
+    "Noto Sans CJK SC",
+    "Noto Sans CJK JP",
+    "WenQuanYi Zen Hei",
+    "DejaVu Sans"
+]
+
+# 解决坐标轴负号显示异常
+plt.rcParams["axes.unicode_minus"] = False
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
