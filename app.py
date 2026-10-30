@@ -1620,6 +1620,83 @@ elif page == "实验报告":
                     "暂时没有该文件，请先运行 experiment.py。"
                 )
 
+# =========================================================
+# 自动运行 experiment.py 并展示实验结果
+# =========================================================
+st.divider()
+st.subheader("八、模型参数实验与 SHAP 可解释性分析")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+experiment_path = os.path.join(BASE_DIR, "experiment.py")
+output_dir = os.path.join(BASE_DIR, "output")
+
+# 每个会话只自动运行一次，避免页面交互时重复训练
+if "experiment_auto_run_done" not in st.session_state:
+    st.session_state["experiment_auto_run_done"] = True
+    st.session_state["experiment_run_success"] = False
+    st.session_state["experiment_run_error"] = ""
+
+    if not os.path.isfile(experiment_path):
+        st.session_state["experiment_run_error"] = (
+            "找不到 experiment.py，请确认它位于 GitHub 仓库根目录。"
+        )
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+
+        with st.spinner("正在自动运行实验并生成图表，请稍候……"):
+            try:
+                result = subprocess.run(
+                    [sys.executable, experiment_path],
+                    cwd=BASE_DIR,
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+
+                st.session_state["experiment_run_success"] = (
+                    result.returncode == 0
+                )
+                st.session_state["experiment_run_error"] = (
+                    result.stderr[-10000:]
+                    if result.returncode != 0
+                    else ""
+                )
+
+            except subprocess.TimeoutExpired:
+                st.session_state["experiment_run_error"] = (
+                    "实验运行超过 10 分钟，已停止。"
+                )
+            except Exception as exc:
+                st.session_state["experiment_run_error"] = str(exc)
+
+# 展示运行状态
+if st.session_state.get("experiment_run_success"):
+    st.success("实验运行完成，以下为自动生成的实验结果。")
+elif st.session_state.get("experiment_run_error"):
+    st.error("实验运行失败，请检查错误信息。")
+    st.code(st.session_state["experiment_run_error"])
+
+# 自动展示 experiment.py 生成的图表
+experiment_images = [
+    ("exp1_tree_depth.png", "实验一：决策树深度对准确率的影响"),
+    ("exp2_rf_estimators.png", "实验二：随机森林树数量对 AUC 的影响"),
+    ("shap_summary.png", "实验三：SHAP 全局特征影响分析"),
+    ("shap_waterfall.png", "实验四：高风险学生预测结果解释"),
+]
+
+found_images = False
+
+for image_name, image_title in experiment_images:
+    image_path = os.path.join(output_dir, image_name)
+
+    if os.path.isfile(image_path):
+        st.markdown(f"**{image_title}**")
+        st.image(image_path, use_container_width=True)
+        found_images = True
+
+if not found_images and st.session_state.get("experiment_run_success"):
+    st.warning("实验已执行，但没有找到生成的图片，请检查 experiment.py 的输出路径。")
+
 
 # =========================================================
 # 11. 页面底部
